@@ -1,0 +1,51 @@
+name: 每日股價自動更新
+
+on:
+  schedule:
+    # 每天 UTC 07:00 (台灣時間 15:00)
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: 下載程式碼 (Checkout)
+      uses: actions/checkout@v3
+
+    - name: 設定 Python 環境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 安裝套件
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # ★ 關鍵步驟：先解壓縮，讓爬蟲有舊資料可以讀
+    - name: 解壓縮資料庫 (Decompress DB)
+      run: |
+        gzip -d -k stock_data.db.gz
+
+    - name: 執行更新程式 (Fetch Data)
+      env: 
+        PYTHONIOENCODING: utf-8
+      run: |
+        python fetch_data.py
+
+    - name: 壓縮資料庫 (Compress DB)
+      run: |
+        # 強制覆蓋舊的 gz
+        gzip -f -9 stock_data.db
+
+    - name: 存檔並上傳 (Commit & Push)
+      run: |
+        git config --global user.name "GitHub Action Bot"
+        git config --global user.email "action@github.com"
+        git add stock_data.db.gz
+        git commit -m "📈 自動更新股價: $(date +'%Y-%m-%d')" || echo "無資料變動"
+        git push
