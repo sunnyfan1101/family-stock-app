@@ -1,0 +1,9 @@
+streamlit
+pandas
+yfinance
+plotly
+requests
+lxml
+scikit-learn
+streamlit-option-menu
+openpyxl
