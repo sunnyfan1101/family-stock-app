@@ -8,6 +8,9 @@ import random
 from datetime import datetime, timedelta
 from io import StringIO
 import database
+import lzma # 新增這行
+import shutil # 新增這行
+import os # 新增這行
 
 # --- 1. 取得股票清單 ---
 def get_tw_stock_list():
@@ -362,6 +365,8 @@ def update_stock_data(progress_bar=None, status_text=None):
             
             conn.commit()
 
+        # ... (上面原本的程式碼都不用動) ...
+
         except Exception as e:
             # 印出錯誤但繼續跑
             print(f"\n❌ {stock_id} 發生錯誤: {e}")
@@ -371,7 +376,43 @@ def update_stock_data(progress_bar=None, status_text=None):
         time.sleep(0.2)
 
     conn.close()
-    print("\n🎉 全部更新完成！請檢查資料庫。")
+
+    # --- ★★★ 新增：自動瘦身與強力壓縮 (LZMA) ★★★ ---
+    # 這段代碼會確保資料庫維持在 5 年內，並壓縮成 .xz 以符合 GitHub 限制
+    print("\n🧹 執行自動瘦身 (保留近 5 年)...")
+    try:
+        # 重新連線進行維護 (使用 isolation_level=None 以支援 VACUUM)
+        clean_conn = sqlite3.connect("stock_data.db", isolation_level=None)
+        clean_cursor = clean_conn.cursor()
+        
+        # 1. 刪除 5 年前的資料
+        clean_cursor.execute("DELETE FROM daily_prices WHERE date < date('now', '-5 years')")
+        del_count = clean_cursor.rowcount
+        print(f"   已清除 {del_count} 筆過期資料。")
+        
+        # 2. 執行 VACUUM (釋放空間)
+        print("   正在執行資料庫重組 (VACUUM)...")
+        clean_cursor.execute("VACUUM")
+        clean_conn.close()
+        
+        # 3. 執行 LZMA 強力壓縮
+        print("📦 正在執行 LZMA 強力壓縮...")
+        if os.path.exists("stock_data.db"):
+            with open('stock_data.db', 'rb') as f_in:
+                with lzma.open('stock_data.db.xz', 'wb', preset=9) as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            print("✅ 壓縮完成：產生 stock_data.db.xz")
+            
+            # (選用) 刪除原始 db 節省空間，機器人跑完就會刪掉環境，所以這裡沒差
+            # os.remove("stock_data.db") 
+        else:
+            print("❌ 找不到 stock_data.db，無法壓縮")
+
+    except Exception as e:
+        print(f"⚠️ 瘦身或壓縮失敗: {e}")
+    # ----------------------------------------------------
+
+    print("\n🎉 全部流程結束！(更新 + 瘦身 + 壓縮)")
 
 if __name__ == "__main__":
     update_stock_data()

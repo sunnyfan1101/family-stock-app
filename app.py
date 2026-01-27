@@ -8,20 +8,18 @@ from streamlit_option_menu import option_menu # 務必確認已安裝此套件
 import plotly.express as px # ★ 新增這一行
 import json
 import time
-# --- ★★★ GitHub 版本專用：解壓縮資料庫 ★★★ ---
-import gzip
+# --- ★★★ GitHub 版本專用：解壓縮資料庫 (LZMA版) ★★★ ---
+import lzma # 改用 lzma
 import shutil
 import os
 
-# 如果資料庫檔案 (.db) 不存在，但壓縮檔 (.gz) 存在，就進行解壓縮
-if not os.path.exists("stock_data.db") and os.path.exists("stock_data.db.gz"):
-    # 為了避免 Streamlit 重整時重複解壓，可以加個簡單的判斷，或者直接解壓覆蓋
-    print("正在解壓縮資料庫...")
-    with gzip.open("stock_data.db.gz", "rb") as f_in:
+# 偵測 .xz 檔案
+if not os.path.exists("stock_data.db") and os.path.exists("stock_data.db.xz"):
+    print("正在解壓縮資料庫 (LZMA)...")
+    with lzma.open("stock_data.db.xz", "rb") as f_in:
         with open("stock_data.db", "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
     print("解壓縮完成！")
-# ---------------------------------------------
 
 # ==========================================
 # 0. 頁面設定與 CSS 美化
