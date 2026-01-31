@@ -918,14 +918,15 @@ def main():
                             sim_show = similar_stocks.copy()
 
                             # --- ★★★ 新增這段：將股數換算成張數 (除以 1000) ★★★ ---
-                            sim_show['vol_ma_5'] = pd.to_numeric(sim_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
-                            sim_show['vol_ma_20'] = pd.to_numeric(sim_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
-                            
-                            # 1. 補算「爆量倍數」
+                            # 1. 先計算「爆量倍數」 (這時候 volume 和 vol_ma_20 都是「股數」，相除才正確)
                             sim_show['vol_spike'] = sim_show.apply(
                                 lambda x: x['volume'] / x['vol_ma_20'] if pd.notna(x['vol_ma_20']) and x['vol_ma_20'] > 0 else 0, 
                                 axis=1
                             )
+
+                            # 2. 計算完後，再把均量換算成「張數」 (除以 1000) 顯示用
+                            sim_show['vol_ma_5'] = pd.to_numeric(sim_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
+                            sim_show['vol_ma_20'] = pd.to_numeric(sim_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
 
                             # 2. 補齊欄位 (加入週/月均量)
                             all_cols = [
