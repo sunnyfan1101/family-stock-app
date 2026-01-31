@@ -8,9 +8,6 @@ import random
 from datetime import datetime, timedelta
 from io import StringIO
 import database
-import lzma # 新增這行
-import shutil # 新增這行
-import os # 新增這行
 
 # --- 1. 取得股票清單 ---
 def get_tw_stock_list():
@@ -145,16 +142,32 @@ def get_db_history_data(stock_id, days=600):
     finally: conn.close()
 
 # --- 5. 主更新邏輯 ---
+# [fetch_data.py] 的 update_stock_data 函式 (修正版)
+
+# [fetch_data.py] 的 update_stock_data 函式 (三率優化版)
+
 def update_stock_data(progress_bar=None, status_text=None):
     conn = database.get_connection()
     cursor = conn.cursor()
     
+    # ★★★ 0. 檢查並自動新增三率欄位 (資料庫遷移) ★★★
+    new_cols = ['operating_margin', 'pretax_margin', 'net_margin']
+    for col in new_cols:
+        try:
+            cursor.execute(f"SELECT {col} FROM stocks LIMIT 1")
+        except:
+            print(f"⚠️ 偵測到舊版資料庫，正在新增 '{col}' 欄位...")
+            try:
+                cursor.execute(f"ALTER TABLE stocks ADD COLUMN {col} REAL")
+                conn.commit()
+            except Exception as e:
+                print(f"❌ 欄位 {col} 新增失敗: {e}")
+
     all_stocks = get_tw_stock_list()
     db_dates = get_db_last_dates()
-    today = datetime.now().date()
     total_stocks = len(all_stocks)
     
-    print(f"🚀 準備更新 {total_stocks} 檔股票 (全能智慧模式)...")
+    print(f"🚀 準備更新 {total_stocks} 檔股票 (含三率)...")
     
     for i, stock in enumerate(all_stocks):
         stock_id = stock["id"]
@@ -164,7 +177,7 @@ def update_stock_data(progress_bar=None, status_text=None):
         if status_text: status_text.text(f"處理中 [{i+1}/{total_stocks}]: {stock['name']}")
         if i % 10 == 0: print(f"[{i+1}/{total_stocks}] 處理: {stock['name']}...", end="\r")
         
-        # --- 變數初始化 ---
+        # 變數初始化
         capital_billion = 0
         revenue_streak = 0
         revenue_growth_pct = 0
@@ -174,176 +187,190 @@ def update_stock_data(progress_bar=None, status_text=None):
         year_high_2y = 0
         year_low_2y = 0
         
-        try: # 開始監控錯誤
-            
-            # --- ★★★ 核心修改：智慧判斷區間 (User Requested) ★★★ ---
+        try: 
+            # 1. 抓股價 (維持 5 年邏輯)
             last_date_str = db_dates.get(stock_id)
             ticker = yf.Ticker(symbol)
             new_hist = pd.DataFrame()
 
             try:
                 if last_date_str:
-                    # 【情境 A：老股票】
-                    # 邏輯：從「資料庫最後日期 - 5天」開始抓到今天
-                    # 好處：1. 保證有 overlap 能算漲跌幅 (修復 0% 問題)
-                    #       2. 如果太久沒跑更新，也會自動把中間缺的月份補齊 (修復 Gap)
                     last_dt = datetime.strptime(last_date_str, '%Y-%m-%d')
-                    start_dt = last_dt - timedelta(days=5) # 往回推 5 天
+                    start_dt = last_dt - timedelta(days=5) 
                     start_arg = start_dt.strftime('%Y-%m-%d')
-                    
-                    # 抓取這段期間的資料
                     new_hist = ticker.history(start=start_arg, auto_adjust=False)
                 else:
-                    # 【情境 B：新股票】
-                    # 邏輯：完全沒看過的股票，直接抓 5 年
                     new_hist = ticker.history(period="5y", auto_adjust=False)
-            
             except Exception as e:
                 print(f"抓取失敗: {e}")
                 new_hist = pd.DataFrame()
             
-            # --- 資料拼接與防呆 ---
+            # --- 資料拼接 ---
             if last_date_str:
                 old_df = get_db_history_data(stock_id, days=600)
-                
                 if not new_hist.empty:
-                    # 有新資料 -> 處理時區並拼接
                     try:
                         if new_hist.index.tz is not None:
                             new_hist.index = new_hist.index.tz_localize(None)
                     except: pass
                     
                     combined_close = pd.concat([old_df['close'] if not old_df.empty else pd.Series(dtype=float), new_hist['Close']])
-                    
                     if not old_df.empty and 'volume' in old_df.columns:
                         combined_volume = pd.concat([old_df['volume'], new_hist['Volume']])
                     else:
                         combined_volume = new_hist['Volume']
                 else:
-                    # ⚠️ 沒有新資料 -> 直接用舊
                     combined_close = old_df['close'] if not old_df.empty else pd.Series(dtype=float)
                     combined_volume = old_df['volume'] if not old_df.empty and 'volume' in old_df.columns else pd.Series(dtype=float)
                 
-                # 去重
                 combined_close = combined_close[~combined_close.index.duplicated(keep='last')]
                 combined_volume = combined_volume[~combined_volume.index.duplicated(keep='last')]
-                
             else:
-                # 新股票
                 if new_hist.empty: continue
                 combined_close = new_hist['Close']
                 combined_volume = new_hist['Volume']
 
-            # --- 計算技術指標 ---
+            # --- 計算指標 ---
             if combined_close.empty: continue
-
-            full_ma5 = combined_close.rolling(window=5).mean()
-            full_ma20 = combined_close.rolling(window=20).mean()
-            full_ma60 = combined_close.rolling(window=60).mean()
             
-            # ★ 均量
+            # 均量 (存股數)
             if not combined_volume.empty:
                 vol_ma5 = combined_volume.rolling(window=5).mean()
                 vol_ma20 = combined_volume.rolling(window=20).mean()
                 last_vol_ma5 = vol_ma5.iloc[-1] if not pd.isna(vol_ma5.iloc[-1]) else 0
                 last_vol_ma20 = vol_ma20.iloc[-1] if not pd.isna(vol_ma20.iloc[-1]) else 0
 
-            # ★ 位階
-            past_year = combined_close.tail(250)
-            year_high = past_year.max() if not past_year.empty else 0
-            year_low = past_year.min() if not past_year.empty else 0
-            
+            # 位階
             past_2year = combined_close.tail(500)
+            year_high = combined_close.tail(250).max() if not combined_close.empty else 0
+            year_low = combined_close.tail(250).min() if not combined_close.empty else 0
             year_high_2y = past_2year.max() if not past_2year.empty else year_high
             year_low_2y = past_2year.min() if not past_2year.empty else year_low
 
-            # --- 填回 new_hist (只存新資料的指標) ---
+            # 填回 new_hist
             if not new_hist.empty:
+                full_ma5 = combined_close.rolling(window=5).mean()
+                full_ma20 = combined_close.rolling(window=20).mean()
+                full_ma60 = combined_close.rolling(window=60).mean()
                 new_hist['MA5'] = full_ma5.loc[new_hist.index]
                 new_hist['MA20'] = full_ma20.loc[new_hist.index]
                 new_hist['MA60'] = full_ma60.loc[new_hist.index]
                 new_hist['Change_Pct'] = new_hist['Close'].pct_change(fill_method=None) * 100
 
-            # --- 抓取基本面 ---
+            # --- 抓取基本面 (含三率) ---
             try: 
-                # 強制重新抓取 info，不使用快取
                 info = yf.Ticker(symbol).info 
             except: 
                 info = {}
             
-            # 1. EPS 與 本益比
-            eps = info.get('trailingEps')
-            if eps is None: eps = 0 # 真的沒資料才補 0
-            
-            pe = info.get('trailingPE')
-            if pe is None: pe = 0
-
-            # 2. 股淨比
-            pb = info.get('priceToBook', 0)
-
-            # 3. Beta
-            beta = info.get('beta', 0)
-
-            # 4. 市值 (優先用 marketCap，沒有則用 totalAssets)
+            # 1. 基礎數據
+            eps = info.get('trailingEps', 0) or 0
+            pe = info.get('trailingPE', 0) or 0
+            pb = info.get('priceToBook', 0) or 0
+            beta = info.get('beta', 0) or 0
             market_cap = info.get('marketCap')
             if market_cap is None: market_cap = info.get('totalAssets', 0)
 
-            # 5. 殖利率 (智慧修正版)
+            # 2. 殖利率
             raw_yield = info.get('dividendYield')
-            if raw_yield is None:
-                raw_yield = info.get('trailingAnnualDividendYield')
-            
-            # ★★★ 修改這裡：增加防呆判斷 ★★★
+            if raw_yield is None: raw_yield = info.get('trailingAnnualDividendYield')
             if raw_yield is not None:
-                # Yahoo 有時候會給 0.03 (代表 3%)，有時候給 3.0 (代表 3%)
-                # 我們假設殖利率不太可能超過 30%，如果大於 1，我們就當作它已經是百分比了，不再乘 100
-                if raw_yield > 1: 
-                    yield_rate = raw_yield  # 已經是百分比了 (例如 3.5)
-                else:
-                    yield_rate = raw_yield * 100 # 是小數 (例如 0.035 -> 3.5)
+                yield_rate = raw_yield if raw_yield > 1 else raw_yield * 100
             else:
                 yield_rate = 0
             
-            # 6. 營收成長
+            # 3. 成長率
             rev_growth = info.get('revenueGrowth')
             revenue_growth_pct = rev_growth * 100 if rev_growth is not None else 0
             revenue_ttm = revenue_growth_pct 
-
-            # 7. EPS 成長
             earn_growth = info.get('earningsGrowth')
             eps_growth_pct = earn_growth * 100 if earn_growth is not None else 0
 
-            # ★ 營收連增
-            revenue_streak = calculate_revenue_streak(ticker)
+            # 4. ★★★ 抓取三率 (Info 優先，財報補強) ★★★
+            # A. 毛利率 (Gross)
+            raw_gross = info.get('grossMargins')
+            gross_margin_pct = raw_gross * 100 if raw_gross is not None else 0
             
-            # ★ 股本
+            # B. 營業利益率 (Operating)
+            raw_op = info.get('operatingMargins')
+            operating_margin_pct = raw_op * 100 if raw_op is not None else 0
+            
+            # C. 稅後純益率 (Net)
+            raw_net = info.get('profitMargins')
+            net_margin_pct = raw_net * 100 if raw_net is not None else 0
+            
+            # D. 稅前純益率 (Pretax) - ★ 強力計算區 ★
+            pretax_margin_pct = 0 
+            
+            # (1) 先試試看 Info 有沒有
+            if info.get('pretaxMargins') is not None:
+                pretax_margin_pct = info['pretaxMargins'] * 100
+            
+            # (2) 如果 Info 沒有 (通常台股都沒有)，就去爬損益表
+            if pretax_margin_pct == 0:
+                try:
+                    # 這行代碼會去下載財報，可能會稍微增加一點點更新時間，但值得
+                    fin = ticker.income_stmt
+                    if not fin.empty:
+                        p_income = None
+                        t_revenue = None
+                        
+                        # 模糊搜尋欄位名稱 (因為 Yahoo 有時叫 Pretax Income 有時叫 Pretax Income (Loss))
+                        for idx in fin.index:
+                            label = str(idx)
+                            # 找稅前淨利
+                            if "Pretax Income" in label and p_income is None:
+                                p_income = fin.loc[idx].iloc[0] # 取最近一期
+                            # 找總營收
+                            if ("Total Revenue" in label or "TotalRevenue" in label) and t_revenue is None:
+                                t_revenue = fin.loc[idx].iloc[0] # 取最近一期
+                        
+                        # 開始計算
+                        if p_income is not None and t_revenue is not None and t_revenue != 0:
+                            pretax_margin_pct = (p_income / t_revenue) * 100
+                            # print(f"   [補救成功] {stock['name']} 稅前: {pretax_margin_pct:.2f}%") # 測試用
+                except Exception as e:
+                    # 如果真的算不出來，就保持 0
+                    pass
+
+            revenue_streak = calculate_revenue_streak(ticker)
             shares = info.get('sharesOutstanding', 0)
             if shares: capital_billion = shares / 10000000 
 
             # --- 寫入資料庫 (stocks) ---
+            # ★ 更新 SQL，加入 operating_margin, pretax_margin, net_margin
             cursor.execute('''
                 UPDATE stocks 
                 SET eps=?, pe_ratio=?, pb_ratio=?, yield_rate=?, beta=?, market_cap=?, 
                     revenue_growth=?, revenue_ttm=?, revenue_streak=?, eps_growth=?, 
                     year_high=?, year_low=?, capital=?, vol_ma_5=?, vol_ma_20=?, 
-                    year_high_2y=?, year_low_2y=?, last_updated=?
+                    year_high_2y=?, year_low_2y=?, gross_margin=?, 
+                    operating_margin=?, pretax_margin=?, net_margin=?, 
+                    last_updated=?
                 WHERE stock_id=?
             ''', (eps, pe, pb, yield_rate, beta, market_cap, 
                   revenue_growth_pct, revenue_ttm, revenue_streak, eps_growth_pct, 
                   year_high, year_low, capital_billion, last_vol_ma5, last_vol_ma20, 
-                  year_high_2y, year_low_2y, 
+                  year_high_2y, year_low_2y, gross_margin_pct,
+                  operating_margin_pct, pretax_margin_pct, net_margin_pct,
                   datetime.now().strftime('%Y-%m-%d'), stock_id))
             
             if cursor.rowcount == 0:
                  cursor.execute('''
-                    INSERT INTO stocks (stock_id, name, industry, market_type, yahoo_symbol, eps, pe_ratio, pb_ratio, yield_rate, beta, market_cap, 
+                    INSERT INTO stocks (stock_id, name, industry, market_type, yahoo_symbol, 
+                    eps, pe_ratio, pb_ratio, yield_rate, beta, market_cap, 
                     revenue_growth, revenue_ttm, revenue_streak, eps_growth, 
-                    year_high, year_low, capital, vol_ma_5, vol_ma_20, year_high_2y, year_low_2y, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (stock_id, stock['name'], stock['industry'], stock['market'], symbol, eps, pe, pb, yield_rate, beta, market_cap, 
+                    year_high, year_low, capital, vol_ma_5, vol_ma_20, 
+                    year_high_2y, year_low_2y, gross_margin, 
+                    operating_margin, pretax_margin, net_margin, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (stock_id, stock['name'], stock['industry'], stock['market'], symbol, 
+                      eps, pe, pb, yield_rate, beta, market_cap, 
                       revenue_growth_pct, revenue_ttm, revenue_streak, eps_growth_pct, 
                       year_high, year_low, capital_billion, last_vol_ma5, last_vol_ma20, 
-                      year_high_2y, year_low_2y, datetime.now().strftime('%Y-%m-%d')))
+                      year_high_2y, year_low_2y, gross_margin_pct, 
+                      operating_margin_pct, pretax_margin_pct, net_margin_pct,
+                      datetime.now().strftime('%Y-%m-%d')))
 
             # --- 寫入資料庫 (daily_prices) ---
             if not new_hist.empty:
@@ -365,54 +392,48 @@ def update_stock_data(progress_bar=None, status_text=None):
             
             conn.commit()
 
-        # ... (上面原本的程式碼都不用動) ...
-
         except Exception as e:
-            # 印出錯誤但繼續跑
             print(f"\n❌ {stock_id} 發生錯誤: {e}")
             continue
         
-        # 避免被 Yahoo 封鎖
         time.sleep(0.2)
 
     conn.close()
 
-    # --- ★★★ 新增：自動瘦身與強力壓縮 (LZMA) ★★★ ---
-    # 這段代碼會確保資料庫維持在 5 年內，並壓縮成 .xz 以符合 GitHub 限制
-    print("\n🧹 執行自動瘦身 (保留近 5 年)...")
+    # ==========================================
+    # ★★★ GitHub 版本專屬：自動瘦身與壓縮 (.xz) ★★★
+    # ==========================================
+    print("\n🧹 [GitHub Mode] 執行資料庫瘦身 (保留近 5 年)...")
     try:
-        # 重新連線進行維護 (使用 isolation_level=None 以支援 VACUUM)
+        import lzma
+        import shutil
+        import os
+
+        # 1. 重新連線進行 VACUUM
         clean_conn = sqlite3.connect("stock_data.db", isolation_level=None)
         clean_cursor = clean_conn.cursor()
         
-        # 1. 刪除 5 年前的資料
+        # 刪除 5 年前資料
         clean_cursor.execute("DELETE FROM daily_prices WHERE date < date('now', '-5 years')")
-        del_count = clean_cursor.rowcount
-        print(f"   已清除 {del_count} 筆過期資料。")
+        print(f"   已清除 {clean_cursor.rowcount} 筆過期資料。")
         
-        # 2. 執行 VACUUM (釋放空間)
+        # 重組資料庫 (VACUUM)
         print("   正在執行資料庫重組 (VACUUM)...")
         clean_cursor.execute("VACUUM")
         clean_conn.close()
         
-        # 3. 執行 LZMA 強力壓縮
+        # 2. 執行 LZMA 強力壓縮
         print("📦 正在執行 LZMA 強力壓縮...")
         if os.path.exists("stock_data.db"):
             with open('stock_data.db', 'rb') as f_in:
                 with lzma.open('stock_data.db.xz', 'wb', preset=9) as f_out:
                     shutil.copyfileobj(f_in, f_out)
             print("✅ 壓縮完成：產生 stock_data.db.xz")
-            
-            # (選用) 刪除原始 db 節省空間，機器人跑完就會刪掉環境，所以這裡沒差
-            # os.remove("stock_data.db") 
         else:
             print("❌ 找不到 stock_data.db，無法壓縮")
 
     except Exception as e:
         print(f"⚠️ 瘦身或壓縮失敗: {e}")
-    # ----------------------------------------------------
-
-    print("\n🎉 全部流程結束！(更新 + 瘦身 + 壓縮)")
 
 if __name__ == "__main__":
     update_stock_data()

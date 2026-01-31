@@ -7,4 +7,3 @@ lxml
 scikit-learn
 streamlit-option-menu
 openpyxl
-matplotlib

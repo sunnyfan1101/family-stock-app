@@ -1,4 +1,3 @@
-# analysis.py (最終檢查確認版)
 import pandas as pd
 import numpy as np
 import sqlite3
@@ -7,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 def get_connection():
     return sqlite3.connect("stock_data.db")
 
-# --- 計算所有股票與目標股票的 K 線相關係數 ---
+# --- 1. 計算所有股票與目標股票的 K 線相關係數 ---
 def get_price_correlation(target_id, days=60):
     conn = get_connection()
     try:
@@ -46,10 +45,11 @@ def get_price_correlation(target_id, days=60):
     finally:
         conn.close()
 
+# --- 2. 抓取所有特徵資料 ---
 def get_all_stock_features():
     conn = get_connection()
     try:
-        # 抓取所有需要的欄位
+        # 抓取所有需要的欄位 (包含 gross_margin)
         sql = """
         SELECT 
             s.stock_id, s.name, s.industry,
@@ -57,14 +57,14 @@ def get_all_stock_features():
             s.revenue_growth, s.revenue_streak, 
             s.capital, s.eps_growth,
             s.vol_ma_5, s.vol_ma_20,
-            s.year_high, s.year_low, s.year_high_2y, s.year_low_2y,
+            s.year_high, s.year_low, s.year_high_2y, s.year_low_2y, 
+            s.gross_margin, -- ★ 確保這裡有抓到毛利率
             d.close, d.volume, d.change_pct, d.ma_5, d.ma_20, d.ma_60
         FROM stocks s
         JOIN daily_prices d ON s.stock_id = d.stock_id
         WHERE d.date = (SELECT MAX(date) FROM daily_prices dp WHERE dp.stock_id = s.stock_id)
         """
         df = pd.read_sql(sql, conn)
-
     
     except Exception as e:
         print(f"SQL Error: {e}")
@@ -75,15 +75,15 @@ def get_all_stock_features():
     # 確保數值格式正確
     cols = ['pe_ratio', 'yield_rate', 'pb_ratio', 'eps', 'beta', 'change_pct', 'close', 
             'revenue_growth', 'capital', 'eps_growth', 'revenue_streak', 'vol_ma_5', 'vol_ma_20',
-            'year_high', 'year_low', 'year_high_2y', 'year_low_2y', 'ma_20', 'ma_60']
+            'year_high', 'year_low', 'year_high_2y', 'year_low_2y', 'ma_20', 'ma_60', 'gross_margin']
+    
     for col in cols: 
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     return df
 
-# [analysis.py] 請替換整個 find_similar_stocks 函式
-
+# --- 3. 核心演算法：尋找相似股 ---
 def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     # 1. 取得基本特徵
     df = get_all_stock_features()
@@ -110,19 +110,19 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
         if len(df) < 2:
             return None, f"該產業只有一檔股票，無法比對。"
 
-    # ★★★ 關鍵修改 1：備份一份「原始資料」給最後顯示用 ★★★
+    # ★★★ 關鍵：備份一份「原始資料」給最後顯示用 (避免顯示被 Normalize 過的怪數字) ★★★
     df_display = df.copy() 
 
     # --- 4. 計算衍生特徵 (計算用) ---
     df['bias_20'] = (df['close'] - df['ma_20']) / df['ma_20'].replace(0, np.nan)
     df['bias_60'] = (df['close'] - df['ma_60']) / df['ma_60'].replace(0, np.nan)
     
-    # 取 Log
+    # 取 Log (讓分佈更常態，避免極端值影響過大)
     df['capital_log'] = np.log1p(df['capital'].fillna(0))
     df['vol_ma5_log'] = np.log1p(df['vol_ma_5'].fillna(0))
     df['vol_ma20_log'] = np.log1p(df['vol_ma_20'].fillna(0))
     
-    # 位階
+    # 位階計算
     if period == '2y':
         high_col, low_col = 'year_high_2y', 'year_low_2y'
     else:
@@ -130,9 +130,10 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     
     df['position'] = (df['close'] - df[low_col]) / (df[high_col] - df[low_col]).replace(0, np.nan)
     
-    # --- 5. 定義 15 大特徵 ---
+    # --- 5. 定義特徵向量 (加入 gross_margin) ---
     features = [
-        'pe_ratio', 'yield_rate', 'pb_ratio', 'eps', 'revenue_growth', 'revenue_streak',
+        'pe_ratio', 'yield_rate', 'pb_ratio', 'eps', 'gross_margin', # ★ 加入 gross_margin
+        'revenue_growth', 'revenue_streak',
         'bias_20', 'bias_60', 'beta', 'change_pct', 'position',
         'capital_log', 'vol_ma5_log', 'vol_ma20_log',
         'trend_corr' 
@@ -142,20 +143,24 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     scaler = StandardScaler()
     
     for col in features:
+        # 防呆：處理無限大或空值
+        if col not in df.columns: df[col] = 0
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)
         median_val = df[col].median()
         df[col] = df[col].fillna(median_val)
         
-        # 這裡會把 66.2 削成 37.61，但只影響 df (計算用)，不影響 df_display
+        # 去極端值 (Clip)
         upper = df[col].quantile(0.99)
         lower = df[col].quantile(0.01)
         df[col] = df[col].clip(lower, upper)
 
+    # 產生標準化後的數據矩陣
     scaled_data = scaler.fit_transform(df[features])
 
     # --- 6. 加權計算 ---
+    # 這裡的順序必須跟上面的 features 列表嚴格對應！
     w_vec = np.array([
-        weights.get('pe', 3), weights.get('yield', 3), weights.get('pb', 3), weights.get('eps', 3), 
+        weights.get('pe', 3), weights.get('yield', 3), weights.get('pb', 3), weights.get('eps', 3), weights.get('gross', 3), # ★ 加入 gross 權重
         weights.get('revenue', 3), weights.get('streak', 3),
         weights.get('bias20', 3), weights.get('bias60', 3), weights.get('beta', 3), weights.get('change', 3), 
         weights.get('position', 3),
@@ -163,19 +168,24 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
         weights.get('trend', 3)
     ])
     
+    # 將數據乘上權重
     weighted_data = scaled_data * w_vec
     
+    # 找出目標股票的向量
     target_idx = df.index[df['stock_id'] == target_id][0]
     target_vec = weighted_data[target_idx]
     
+    # 計算歐幾里得距離
     distances = np.linalg.norm(weighted_data - target_vec, axis=1)
     
+    # 轉換為相似度分數 (100分制)
     max_dist = np.max(distances)
     if max_dist == 0: max_dist = 1
     similarity_scores = (1 - (distances / max_dist)) * 100
     
-    # ★★★ 關鍵修改 2：把算好的相似度，填回去「原始資料表」 ★★★
+    # ★★★ 把算好的相似度，填回去「原始資料表 (df_display)」 ★★★
     df_display['similarity'] = similarity_scores
+    df_display['position'] = df['position'] # 把算好的位階借過來用
     
     # --- 7. 回傳結果 ---
     result_cols = [
@@ -183,14 +193,11 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
         'change_pct', 'trend_corr', 'position', 
         'volume', 'vol_ma_20', 'vol_ma_5',
         'revenue_growth', 'eps_growth', 'revenue_streak',
-        'pe_ratio', 'pb_ratio', 'yield_rate', 'eps',
+        'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'gross_margin', # ★ 確保這裡有回傳 gross_margin
         'capital', 'beta'
     ]
     
-    # 防呆：確保 df_display 也有 position 這個欄位 (因為它是剛剛算出來的)
-    df_display['position'] = df['position'] # 把算好的位階借過來用
-
-    # 從 df_display (原始資料) 取值，而不是從被削過的 df 取值
+    # 只回傳存在的欄位
     available_cols = [c for c in result_cols if c in df_display.columns]
     result = df_display[available_cols].sort_values('similarity', ascending=False).head(11)
     
