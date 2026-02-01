@@ -81,7 +81,7 @@ def load_data(filters):
         s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
         s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
         s.eps_growth, s.gross_margin, 
-        s.operating_margin, s.pretax_margin, s.net_margin, -- ★★★ 記得加入這行 ★★★
+        s.operating_margin, s.pretax_margin, s.net_margin,
         {col_h} as year_high, {col_l} as year_low,
         d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
     FROM stocks s
@@ -656,7 +656,7 @@ def main():
         st.markdown("---")
         
         if not df_result.empty:
-            with st.expander("🗺️ 產業資金流向 (熱力圖) - 點擊展開", expanded=True):
+            with st.expander("🗺️ 產業資金流向 (熱力圖) - 點擊展開", expanded=False):
                 df_treemap = df_result.copy()
                 df_treemap['industry'] = df_treemap['industry'].fillna('其他')
                 df_treemap['change_pct'] = pd.to_numeric(df_treemap['change_pct'], errors='coerce').fillna(0)
@@ -735,7 +735,7 @@ def main():
                     .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
                     .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
                     .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
-                    .background_gradient(subset=['gross_margin', 'operating_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50), # ★ 三率給橘色
+                    .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50),
                     
                     column_config={
                         "stock_id": "代號", "name": "名稱", "industry": "產業",
@@ -869,6 +869,8 @@ def main():
                 w_pe = st.slider("本益比 (PE)", 0, 5, 3, help="公式：股價 / EPS")
                 w_yield = st.slider("殖利率 (Yield)", 0, 5, 3, help="公式：現金股利 / 股價")
                 w_gross = st.slider("毛利率 (Gross)", 0, 5, 3, help="公式：(營收 - 成本) / 營收") # ★ 新增這行
+                w_operating = st.slider("營業利益率 (Operating)", 0, 5, 3, help="公式：營業利益 / 營收")
+                w_net = st.slider("稅後淨利率 (Net)", 0, 5, 3, help="公式：稅後淨利 / 營收")
                 w_revenue = st.slider("營收成長 (YoY)", 0, 5, 3, help="公式：(本季營收 - 去年同季) / 去年同季")
                 w_streak = st.slider("營收連增 (Streak)", 0, 5, 3, help="定義：年度營收連續成長年數")
                 w_eps = st.slider("每股盈餘 (EPS)", 0, 5, 3, help="定義：Trailing 12-Month EPS")
@@ -900,7 +902,9 @@ def main():
                     try:
                     # 1. 執行分析
                         weights = {
-                            'pe': w_pe, 'yield': w_yield, 'gross': w_gross, 'pb': w_pb, 'eps': w_eps, 
+                            'pe': w_pe, 'yield': w_yield, 'gross': w_gross, 'pb': w_pb, 'eps': w_eps,
+                            'operating': w_operating,     # ★ 新增：營業利益率
+                            'net': w_net,
                             'revenue': w_revenue, 'streak': w_streak, 'capital': w_capital,
                             'bias20': w_bias20, 'bias60': w_bias60, 'beta': w_beta, 'change': w_change, 
                             'position': w_position, 'vol5': w_vol5, 'vol20': w_vol20, 'trend': w_trend
@@ -933,37 +937,45 @@ def main():
                                 'stock_id', 'name', 'industry', 'similarity',
                                 'close', 'change_pct', 'vol_spike', 'position', 'beta',
                                 'revenue_growth', 'eps_growth', 'revenue_streak',
-                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps' ,'gross_margin', 'capital',
-                                'vol_ma_5', 'vol_ma_20' # ★ 新增
+                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
+                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 加入三率
+                                'capital'
                             ]
+                            
+                            # 防呆：確保欄位存在
                             for c in all_cols:
                                 if c not in sim_show.columns: sim_show[c] = 0
 
-                            # 3. 強制轉數字
+                            # 4. 強制轉數字
                             numeric_cols = [
                                 'similarity', 'close', 'change_pct', 'vol_spike', 'position', 'beta',
                                 'revenue_growth', 'eps_growth', 'revenue_streak',
-                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps','gross_margin', 'capital',
-                                'vol_ma_5', 'vol_ma_20'
+                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital',
+                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin' # ★ 加入三率
                             ]
                             for c in numeric_cols:
                                 sim_show[c] = pd.to_numeric(sim_show[c], errors='coerce').fillna(0)
 
-                            # 4. 極簡配色風格 (與篩選頁面一致)
-                            # ★★★ 修改 1：加入 on_select 與 selection_mode，讓表格可以點選 ★★★
+                            # 5. 表格顯示設定 (同步篩選頁面的風格)
                             event = st.dataframe(
                                 sim_show.style.format({
                                     'similarity': '{:.1f}%',
-                                    'close': '{:.2f}', 'change_pct': '{:+.2f}%',
+                                    'close': '{:.2f}', 
+                                    'change_pct': '{:+.2f}%',
                                     'vol_spike': '{:.1f}倍', 
-                                    'position': '{:.2f}', 'beta': '{:.2f}',
-                                    'revenue_growth': '{:+.2f}%', 'eps_growth': '{:+.2f}%', 
+                                    'position': '{:.2f}', 
+                                    'beta': '{:.2f}',
+                                    'revenue_growth': '{:+.2f}%', 
+                                    'eps_growth': '{:+.2f}%', 
                                     'revenue_streak': '{:.0f}年',
-                                    'pe_ratio': '{:.1f}', 'pb_ratio': '{:.2f}',
+                                    'pe_ratio': '{:.1f}', 
+                                    'pb_ratio': '{:.2f}',
                                     'yield_rate': '{:.2f}%', 
                                     'gross_margin': '{:.2f}%',
+                                    'operating_margin': '{:.2f}%', # ★
+                                    'pretax_margin': '{:.2f}%',    # ★
+                                    'net_margin': '{:.2f}%',       # ★
                                     'capital': '{:.1f}億',
-                                    'vol_ma_5': '{:,.0f}張', 'vol_ma_20': '{:,.0f}張',
                                     'eps': '{:.2f}'
                                 })
                                 .background_gradient(subset=['similarity'], cmap='Greens')
@@ -971,29 +983,34 @@ def main():
                                 .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
                                 .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
                                 .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
-                                .background_gradient(subset=['gross_margin'], cmap='Oranges', vmin=0, vmax=50),
-                                
+                                .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50),
                                 column_config={
                                     "stock_id": "代號", "name": "名稱", "industry": "產業", "similarity": "相似度",
                                     "close": "股價", "change_pct": "漲跌", 
                                     "vol_spike": "爆量倍數", "position": "位階", "beta": "波動",
                                     "revenue_growth": "營收成長", "eps_growth": "EPS成長", "revenue_streak": "連增年數",
                                     "pe_ratio": "本益比", "pb_ratio": "股淨比", "yield_rate": "殖利率", 
-                                    "capital": "股本",
-                                    "vol_ma_5": "5日均量", "vol_ma_20": "20日均量", "eps": "EPS", "gross_margin": "毛利率"
+                                    "capital": "股本", "eps": "EPS",
+                                    "gross_margin": "毛利%",
+                                    "operating_margin": "營益%", # ★
+                                    "pretax_margin": "稅前%",   # ★
+                                    "net_margin": "稅後%"      # ★
                                 },
+                                # ★★★ 最終顯示順序：移除均量，加入三率 ★★★
                                 column_order=[
                                     "stock_id", "name", "similarity", "industry",
                                     "close", "vol_spike",
                                     "position", "revenue_growth", "eps_growth", "revenue_streak",
-                                    "vol_ma_5", "vol_ma_20","pe_ratio", "yield_rate","gross_margin", "capital",
-                                    "eps"
+                                    "pe_ratio", "yield_rate", 
+                                    "gross_margin", "operating_margin", "pretax_margin", "net_margin", # ★ 三率排排站
+                                    "capital", "eps"
                                 ],
                                 width='stretch',
                                 hide_index=True,
-                                on_select="rerun",       # ★ 開啟點選功能
-                                selection_mode="single-row" # ★ 單選模式
+                                on_select="rerun",
+                                selection_mode="single-row"
                             )
+                            
                             
                             st.markdown("---")
                             
