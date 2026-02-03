@@ -10,7 +10,6 @@ def get_connection():
 def get_price_correlation(target_id, days=60):
     conn = get_connection()
     try:
-        # 抓取最近 120 天收盤價
         sql = f"""
         SELECT stock_id, date, close 
         FROM daily_prices 
@@ -19,13 +18,11 @@ def get_price_correlation(target_id, days=60):
         df = pd.read_sql(sql, conn)
         df['date'] = pd.to_datetime(df['date'])
         
-        # 轉置表格
         price_matrix = df.pivot(index='date', columns='stock_id', values='close')
         
         if target_id not in price_matrix.columns:
             return None
             
-        # 計算相關係數
         recent_matrix = price_matrix.tail(days)
         corr_series = recent_matrix.corrwith(recent_matrix[target_id])
         
@@ -40,11 +37,11 @@ def get_price_correlation(target_id, days=60):
     finally:
         conn.close()
 
-# --- 2. 抓取所有特徵資料 (修正：補上三率) ---
+# --- 2. 抓取所有特徵資料 (含三率 + 盤整天數) ---
 def get_all_stock_features():
     conn = get_connection()
     try:
-        # ★★★ 修改重點：在 SELECT 中補上 operating_margin, pretax_margin, net_margin ★★★
+        # ★★★ 修改重點：SELECT 加入 s.consolidation_days ★★★
         sql = """
         SELECT 
             s.stock_id, s.name, s.industry,
@@ -53,7 +50,8 @@ def get_all_stock_features():
             s.capital, s.eps_growth,
             s.vol_ma_5, s.vol_ma_20,
             s.year_high, s.year_low, s.year_high_2y, s.year_low_2y, 
-            s.gross_margin, s.operating_margin, s.pretax_margin, s.net_margin, -- ★ 這裡都要抓
+            s.gross_margin, s.operating_margin, s.pretax_margin, s.net_margin,
+            s.consolidation_days,  -- ★ 新增這行
             d.close, d.volume, d.change_pct, d.ma_5, d.ma_20, d.ma_60
         FROM stocks s
         JOIN daily_prices d ON s.stock_id = d.stock_id
@@ -71,7 +69,8 @@ def get_all_stock_features():
     cols = ['pe_ratio', 'yield_rate', 'pb_ratio', 'eps', 'beta', 'change_pct', 'close', 
             'revenue_growth', 'capital', 'eps_growth', 'revenue_streak', 'vol_ma_5', 'vol_ma_20',
             'year_high', 'year_low', 'year_high_2y', 'year_low_2y', 'ma_20', 'ma_60', 
-            'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'] # ★ 加入列表
+            'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 
+            'consolidation_days'] # ★ 加入列表
     
     for col in cols: 
         if col in df.columns:
@@ -81,13 +80,12 @@ def get_all_stock_features():
 
 # --- 3. 核心演算法：尋找相似股 ---
 def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
-    # 1. 取得基本特徵
     df = get_all_stock_features()
     
     if df.empty or target_id not in df['stock_id'].values:
         return None, f"找不到代號 {target_id}，請確認資料庫。"
 
-    # 2. 取得 K 線相關係數
+    # K 線相關係數
     corr_df = get_price_correlation(target_id, days=60)
     if corr_df is not None and not corr_df.empty:
         df = df.merge(corr_df, on='stock_id', how='left')
@@ -95,7 +93,6 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     else:
         df['trend_corr'] = 0
 
-    # 3. 產業限定邏輯
     if industry_only:
         target_inds = df.loc[df['stock_id'] == target_id, 'industry'].values
         if len(target_inds) > 0:
@@ -106,7 +103,6 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
         if len(df) < 2:
             return None, f"該產業只有一檔股票，無法比對。"
 
-    # 備份顯示用資料
     df_display = df.copy() 
 
     # --- 4. 計算衍生特徵 ---
@@ -117,6 +113,9 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     df['vol_ma5_log'] = np.log1p(df['vol_ma_5'].fillna(0))
     df['vol_ma20_log'] = np.log1p(df['vol_ma_20'].fillna(0))
     
+    # 盤整天數取 log (避免 200 天跟 1 天差距過大拉壞權重)
+    df['consolidation_log'] = np.log1p(df['consolidation_days'].fillna(0)) # ★ 處理
+
     if period == '2y':
         high_col, low_col = 'year_high_2y', 'year_low_2y'
     else:
@@ -124,20 +123,17 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     
     df['position'] = (df['close'] - df[low_col]) / (df[high_col] - df[low_col]).replace(0, np.nan)
     
-    # --- 5. 定義特徵向量 (加入三率) ---
-    # ★★★ 修改重點：加入 operating_margin 和 net_margin 到特徵列表 ★★★
-    # (pretax 稅前通常跟稅後連動高，為了節省維度，我們選「毛利、營益、稅後」這三個最關鍵的)
+    # --- 5. 定義特徵向量 (加入 consolidation_log) ---
     features = [
         'pe_ratio', 'yield_rate', 'pb_ratio', 'eps', 
-        'gross_margin', 'operating_margin', 'net_margin', # ★ 加入這三個
+        'gross_margin', 'operating_margin', 'net_margin',
         'revenue_growth', 'revenue_streak',
         'bias_20', 'bias_60', 'beta', 'change_pct', 'position',
         'capital_log', 'vol_ma5_log', 'vol_ma20_log',
+        'consolidation_log', # ★ 加入這個特徵
         'trend_corr' 
     ]
     
-    # 標準化 (StandardScaler) - 這步會讓所有欄位變成平均值為 0，標準差為 1 的分佈
-    # 這樣 20% 的毛利率和 15 倍的本益比，在數學上才有可比性
     scaler = StandardScaler()
     
     for col in features:
@@ -146,22 +142,21 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
         median_val = df[col].median()
         df[col] = df[col].fillna(median_val)
         
-        # 去極端值
         upper = df[col].quantile(0.99)
         lower = df[col].quantile(0.01)
         df[col] = df[col].clip(lower, upper)
 
     scaled_data = scaler.fit_transform(df[features])
 
-    # --- 6. 加權計算 (加入三率權重) ---
-    # 這裡的順序必須嚴格對應上面的 features 列表！
+    # --- 6. 加權計算 (加入 consolidation 權重) ---
     w_vec = np.array([
         weights.get('pe', 3), weights.get('yield', 3), weights.get('pb', 3), weights.get('eps', 3), 
-        weights.get('gross', 3), weights.get('operating', 3), weights.get('net', 3), # ★ 對應加入權重
+        weights.get('gross', 3), weights.get('operating', 3), weights.get('net', 3),
         weights.get('revenue', 3), weights.get('streak', 3),
         weights.get('bias20', 3), weights.get('bias60', 3), weights.get('beta', 3), weights.get('change', 3), 
         weights.get('position', 3),
         weights.get('capital', 3), weights.get('vol5', 3), weights.get('vol20', 3),
+        weights.get('consolidation', 3), # ★ 加入權重 (對應 features 順序)
         weights.get('trend', 3)
     ])
     
@@ -179,14 +174,15 @@ def find_similar_stocks(target_id, weights, period='1y', industry_only=False):
     df_display['similarity'] = similarity_scores
     df_display['position'] = df['position']
     
-    # --- 7. 回傳結果 (包含所有顯示欄位) ---
+    # --- 7. 回傳結果 ---
     result_cols = [
         'stock_id', 'name', 'industry', 'close', 'similarity', 
         'change_pct', 'trend_corr', 'position', 
         'volume', 'vol_ma_20', 'vol_ma_5',
         'revenue_growth', 'eps_growth', 'revenue_streak',
         'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
-        'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 確保這裡有回傳給 app.py 顯示
+        'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 
+        'consolidation_days', # ★ 回傳
         'capital', 'beta'
     ]
     

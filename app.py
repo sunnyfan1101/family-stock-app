@@ -81,7 +81,7 @@ def load_data(filters):
         s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
         s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
         s.eps_growth, s.gross_margin, 
-        s.operating_margin, s.pretax_margin, s.net_margin,
+        s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days,
         {col_h} as year_high, {col_l} as year_low,
         d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
     FROM stocks s
@@ -139,6 +139,10 @@ def load_data(filters):
         if filters.get('pos_max') is not None:
             conditions.append(f"{pos_sql} <= ?")
             params.append(filters.get('pos_max'))
+
+    if filters.get('consolidation_min') is not None:
+        conditions.append("s.consolidation_days >= ?")
+        params.append(filters.get('consolidation_min'))
 
     if conditions:
         final_sql = base_sql + " AND " + " AND ".join(conditions)
@@ -409,6 +413,18 @@ def get_gross_margin_range(option):
     }
     return mapping.get(option, (None, None))
 
+def get_consolidation_range(option):
+    # 盤整天數
+    mapping = {
+        "不拘": None,
+        "盤整 1 個月以上 (> 20天)": 20,
+        "盤整 3 個月以上 (> 60天)": 60,
+        "盤整半年以上 (> 120天)": 120,
+        "長期打底 (> 200天)": 200
+    }
+    return mapping.get(option, None)
+
+
 def delete_user_preset(name):
     conn = get_connection()
     conn.execute("DELETE FROM user_presets WHERE name=?", (name,))
@@ -427,8 +443,8 @@ def main():
         
         selected_page = option_menu(
             "功能選單",
-            ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
-            icons=['funnel', 'robot'],
+            ["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"],
+            icons=['funnel', 'robot', 'gear'],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -589,6 +605,7 @@ def main():
                 vol_ma20_opt = st.selectbox("20日均量 (月量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol20')
                 change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
                 vol_spike_opt = st.selectbox("爆量偵測 (vs 20日均量)", ["不拘", "大於 1.5 倍", "大於 2 倍 (倍增)", "大於 3 倍 (爆量)", "大於 5 倍 (天量)"], key='sel_vol_spike')
+                consolidation_opt = st.selectbox("盤整/打底天數", ["不拘", "盤整 1 個月以上 (> 20天)", "盤整 3 個月以上 (> 60天)", "盤整半年以上 (> 120天)", "長期打底 (> 200天)"])
 
             with col3:
                 st.markdown("##### 💰 獲利能力")
@@ -622,6 +639,8 @@ def main():
             vol_ma5_min, vol_ma5_max = get_volume_range(vol_ma5_opt)
             vol_ma20_min, vol_ma20_max = get_volume_range(vol_ma20_opt)
             gross_min, gross_max = get_gross_margin_range(gross_opt)
+            consolidation_min = get_consolidation_range(consolidation_opt)
+
 
             filters = {
                 'industry': selected_industry if "全部" not in selected_industry else None,
@@ -639,7 +658,7 @@ def main():
                 'vol_ma20_min': vol_ma20_min, 'vol_ma20_max': vol_ma20_max,
                 'vol_spike_min': vol_spike_min,
                 'eps_growth_min': eps_growth_min, 'eps_growth_max': eps_growth_max,
-                'gross_min': gross_min, 'gross_max': gross_max, 
+                'gross_min': gross_min, 'gross_max': gross_max, 'consolidation_min': consolidation_min,
             }
 
         # --- 執行篩選 ---
@@ -740,7 +759,7 @@ def main():
                     column_config={
                         "stock_id": "代號", "name": "名稱", "industry": "產業",
                         "close": "股價", 
-                        "vol_spike": "爆量倍數", "position": "位階", "beta": "波動",
+                        "vol_spike": "爆量倍數", "position": "位階", "consolidation_days": "盤整(天)", "beta": "波動",
                         "revenue_growth": "營收成長", "eps_growth": "EPS成長", "revenue_streak": "連增年數",
                         "pe_ratio": "本益比", "pb_ratio": "股淨比", "yield_rate": "殖利率", 
                         "capital": "股本",
@@ -880,6 +899,7 @@ def main():
             with st.expander("2️⃣ 技術與籌碼 (趨勢)", expanded=True):
                 w_trend = st.slider("K線走勢相似度 (Correlation)", 0, 5, 3, help="比較過去 60 天的股價走勢圖形狀。權重越高，找出來的股票線型會越像目標股")
                 w_position = st.slider(f"位階高低 ({period_val.upper()})", 0, 5, 3, help="公式：(股價 - 期間低點) / (期間高點 - 期間低點)")
+                w_consolidation = st.slider("盤整天數 (Consolidation)", 0, 5, 3, help="權重越高，越傾向尋找打底時間長度相近的股票 (例如都打底半年的)")
                 w_vol5 = st.slider("5日均量 (週量)", 0, 5, 3, help="定義：過去 5 日成交量平均")
                 w_vol20 = st.slider("20日均量 (月量)", 0, 5, 3, help="定義：過去 20 日成交量平均")
                 w_bias20 = st.slider("月線乖離 (Bias 20)", 0, 5, 3, help="公式：(股價 - 20MA) / 20MA")
@@ -907,7 +927,7 @@ def main():
                             'net': w_net,
                             'revenue': w_revenue, 'streak': w_streak, 'capital': w_capital,
                             'bias20': w_bias20, 'bias60': w_bias60, 'beta': w_beta, 'change': w_change, 
-                            'position': w_position, 'vol5': w_vol5, 'vol20': w_vol20, 'trend': w_trend
+                            'position': w_position, 'vol5': w_vol5, 'vol20': w_vol20, 'trend': w_trend, 'consolidation': w_consolidation,
                         }
 
                         similar_stocks, error = analysis.find_similar_stocks(
@@ -939,7 +959,7 @@ def main():
                                 'revenue_growth', 'eps_growth', 'revenue_streak',
                                 'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
                                 'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 加入三率
-                                'capital'
+                                'consolidation_days', 'capital'
                             ]
                             
                             # 防呆：確保欄位存在
@@ -951,7 +971,7 @@ def main():
                                 'similarity', 'close', 'change_pct', 'vol_spike', 'position', 'beta',
                                 'revenue_growth', 'eps_growth', 'revenue_streak',
                                 'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital',
-                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin' # ★ 加入三率
+                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 'consolidation_days', # ★ 加入三率
                             ]
                             for c in numeric_cols:
                                 sim_show[c] = pd.to_numeric(sim_show[c], errors='coerce').fillna(0)
@@ -972,9 +992,10 @@ def main():
                                     'pb_ratio': '{:.2f}',
                                     'yield_rate': '{:.2f}%', 
                                     'gross_margin': '{:.2f}%',
-                                    'operating_margin': '{:.2f}%', # ★
-                                    'pretax_margin': '{:.2f}%',    # ★
-                                    'net_margin': '{:.2f}%',       # ★
+                                    'operating_margin': '{:.2f}%', 
+                                    'pretax_margin': '{:.2f}%',    
+                                    'net_margin': '{:.2f}%',     
+                                    'consolidation_days': '{:.0f}天',
                                     'capital': '{:.1f}億',
                                     'eps': '{:.2f}'
                                 })
@@ -983,7 +1004,9 @@ def main():
                                 .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
                                 .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
                                 .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
-                                .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50),
+                                .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50)
+                                .background_gradient(subset=['consolidation_days'], cmap='Blues', vmin=0, vmax=200),
+                                
                                 column_config={
                                     "stock_id": "代號", "name": "名稱", "industry": "產業", "similarity": "相似度",
                                     "close": "股價", "change_pct": "漲跌", 
@@ -994,13 +1017,14 @@ def main():
                                     "gross_margin": "毛利%",
                                     "operating_margin": "營益%", # ★
                                     "pretax_margin": "稅前%",   # ★
-                                    "net_margin": "稅後%"      # ★
+                                    "net_margin": "稅後%",       # ★
+                                    "consolidation_days": "盤整(天)"
                                 },
                                 # ★★★ 最終顯示順序：移除均量，加入三率 ★★★
                                 column_order=[
                                     "stock_id", "name", "similarity", "industry",
                                     "close", "vol_spike",
-                                    "position", "revenue_growth", "eps_growth", "revenue_streak",
+                                    "position", "consolidation_days", "revenue_growth", "eps_growth", "revenue_streak",
                                     "pe_ratio", "yield_rate", 
                                     "gross_margin", "operating_margin", "pretax_margin", "net_margin", # ★ 三率排排站
                                     "capital", "eps"
@@ -1074,34 +1098,33 @@ def main():
     # ==========================================
     # 頁面 3: 系統設定 (UI 更新版)
     # ==========================================
-    # elif selected_page == "系統設定":
-    #     st.title("⚙️ 系統維護")
+    elif selected_page == "系統設定":
+        st.title("⚙️ 系統維護")
         
-    #     st.info("💡 智慧增量更新：系統會自動檢查每檔股票的最後日期，只抓取缺漏的資料。若資料已是最新，會自動跳過。")
+        st.info("💡 智慧增量更新：系統會自動檢查每檔股票的最後日期，只抓取缺漏的資料。若資料已是最新，會自動跳過。")
 
-    #     # 這裡不使用 subprocess，改用直接呼叫 python 函數
-    #     if st.button("🔄 立即更新 (Smart Update)", type="primary"):
+        # 這裡不使用 subprocess，改用直接呼叫 python 函數
+        if st.button("🔄 立即更新 (Smart Update)", type="primary"):
             
-    #         # 1. 建立 UI 元件
-    #         progress_bar = st.progress(0)
-    #         status_text = st.empty()
+            # 1. 建立 UI 元件
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-    #         # 2. 執行更新 (傳入 UI 元件讓 fetch_data 控制)
-    #         try:
-    #             # 這裡要引用 fetch_data 模組
-    #             import fetch_data 
+            # 2. 執行更新 (傳入 UI 元件讓 fetch_data 控制)
+            try:
+                # 這裡要引用 fetch_data 模組
+                import fetch_data 
                 
-    #             # 開始跑回圈
-    #             fetch_data.update_stock_data(progress_bar, status_text)
+                # 開始跑回圈
+                fetch_data.update_stock_data(progress_bar, status_text)
                 
-    #             # 3. 完成
-    #             progress_bar.progress(100)
-    #             status_text.success("✅ 所有資料更新完成！請重新整理頁面以載入最新數據。")
-    #             st.balloons() # 放個氣球慶祝一下
+                # 3. 完成
+                progress_bar.progress(100)
+                status_text.success("✅ 所有資料更新完成！請重新整理頁面以載入最新數據。")
+                st.balloons() # 放個氣球慶祝一下
                 
-    #         except Exception as e:
-    #             st.error(f"更新發生錯誤: {e}")
-    
+            except Exception as e:
+                st.error(f"更新發生錯誤: {e}")
 
 if __name__ == "__main__":
     main()

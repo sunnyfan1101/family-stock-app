@@ -129,6 +129,36 @@ def calculate_revenue_streak(ticker):
         return streak
     except: return 0
 
+# 新增盤整天數函式
+def calculate_consolidation_days(hist_data, threshold=0.10):
+    """
+    計算盤整天數：
+    從最新一天往回數，看有多少天股價維持在 (最新價 +/- 10%) 的區間內。
+    """
+    if hist_data.empty or len(hist_data) < 5:
+        return 0
+    
+    # 取得最新收盤價
+    current_price = hist_data['Close'].iloc[-1]
+    
+    # 定義箱型上下緣
+    upper_bound = current_price * (1 + threshold)
+    lower_bound = current_price * (1 - threshold)
+    
+    days = 0
+    # 從倒數第二天開始往回數 (因為最新一天一定在範圍內)
+    # 我們取最近 250 天(約一年)來檢查即可
+    recent_data = hist_data.iloc[:-1].tail(250).iloc[::-1] # 反轉順序，從昨天開始往回
+    
+    for price in recent_data['Close']:
+        if lower_bound <= price <= upper_bound:
+            days += 1
+        else:
+            # 一旦超出區間，盤整計數結束
+            break
+            
+    return days
+
 # --- 4. 取得歷史資料函數 ---
 def get_db_history_data(stock_id, days=600):
     conn = database.get_connection()
@@ -144,14 +174,12 @@ def get_db_history_data(stock_id, days=600):
 # --- 5. 主更新邏輯 ---
 # [fetch_data.py] 的 update_stock_data 函式 (修正版)
 
-# [fetch_data.py] 的 update_stock_data 函式 (三率優化版)
-
 def update_stock_data(progress_bar=None, status_text=None):
     conn = database.get_connection()
     cursor = conn.cursor()
     
     # ★★★ 0. 檢查並自動新增三率欄位 (資料庫遷移) ★★★
-    new_cols = ['operating_margin', 'pretax_margin', 'net_margin']
+    new_cols = ['operating_margin', 'pretax_margin', 'net_margin', 'consolidation_days']
     for col in new_cols:
         try:
             cursor.execute(f"SELECT {col} FROM stocks LIMIT 1")
@@ -247,15 +275,40 @@ def update_stock_data(progress_bar=None, status_text=None):
             year_high_2y = past_2year.max() if not past_2year.empty else year_high
             year_low_2y = past_2year.min() if not past_2year.empty else year_low
 
-            # 填回 new_hist
-            if not new_hist.empty:
-                full_ma5 = combined_close.rolling(window=5).mean()
-                full_ma20 = combined_close.rolling(window=20).mean()
-                full_ma60 = combined_close.rolling(window=60).mean()
-                new_hist['MA5'] = full_ma5.loc[new_hist.index]
-                new_hist['MA20'] = full_ma20.loc[new_hist.index]
-                new_hist['MA60'] = full_ma60.loc[new_hist.index]
-                new_hist['Change_Pct'] = new_hist['Close'].pct_change(fill_method=None) * 100
+            # ★★★ 2. 計算盤整天數 ★★★
+            consolidation_days = 0
+            if not combined_close.empty:
+                # 傳入歷史收盤價 Series
+                # 這裡我們用新的 new_hist 還是 combined 都可以，建議用 combined_close (含舊資料) 比較準
+                # 但 combined_close 是 Series，我們要轉成 DataFrame 或是稍微修改函式
+                # 為了方便，我們直接傳 combined_close (Series) 給它，稍微改一下上面的函式參數接收方式即可
+                # 修正上面的 calculate_consolidation_days 讓他接收 Series
+                
+                # 為了程式碼乾淨，直接在這裡用 combined_close 計算：
+                try:
+                    curr_p = combined_close.iloc[-1]
+                    up_b = curr_p * 1.15 # 上下 15% 寬度
+                    lo_b = curr_p * 0.85
+                    
+                    # 取最近 300 天，反轉
+                    check_series = combined_close.iloc[:-1].tail(300).iloc[::-1]
+                    for p in check_series:
+                        if lo_b <= p <= up_b:
+                            consolidation_days += 1
+                        else:
+                            break
+                except:
+                    consolidation_days = 0
+
+                # 填回 new_hist
+                if not new_hist.empty:
+                    full_ma5 = combined_close.rolling(window=5).mean()
+                    full_ma20 = combined_close.rolling(window=20).mean()
+                    full_ma60 = combined_close.rolling(window=60).mean()
+                    new_hist['MA5'] = full_ma5.loc[new_hist.index]
+                    new_hist['MA20'] = full_ma20.loc[new_hist.index]
+                    new_hist['MA60'] = full_ma60.loc[new_hist.index]
+                    new_hist['Change_Pct'] = new_hist['Close'].pct_change(fill_method=None) * 100
 
             # --- 抓取基本面 (含三率) ---
             try: 
@@ -346,6 +399,7 @@ def update_stock_data(progress_bar=None, status_text=None):
                     year_high=?, year_low=?, capital=?, vol_ma_5=?, vol_ma_20=?, 
                     year_high_2y=?, year_low_2y=?, gross_margin=?, 
                     operating_margin=?, pretax_margin=?, net_margin=?, 
+                    consolidation_days=?,
                     last_updated=?
                 WHERE stock_id=?
             ''', (eps, pe, pb, yield_rate, beta, market_cap, 
@@ -353,6 +407,7 @@ def update_stock_data(progress_bar=None, status_text=None):
                   year_high, year_low, capital_billion, last_vol_ma5, last_vol_ma20, 
                   year_high_2y, year_low_2y, gross_margin_pct,
                   operating_margin_pct, pretax_margin_pct, net_margin_pct,
+                  consolidation_days,   
                   datetime.now().strftime('%Y-%m-%d'), stock_id))
             
             if cursor.rowcount == 0:
@@ -362,14 +417,14 @@ def update_stock_data(progress_bar=None, status_text=None):
                     revenue_growth, revenue_ttm, revenue_streak, eps_growth, 
                     year_high, year_low, capital, vol_ma_5, vol_ma_20, 
                     year_high_2y, year_low_2y, gross_margin, 
-                    operating_margin, pretax_margin, net_margin, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    operating_margin, pretax_margin, net_margin, consolidation_days, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (stock_id, stock['name'], stock['industry'], stock['market'], symbol, 
                       eps, pe, pb, yield_rate, beta, market_cap, 
                       revenue_growth_pct, revenue_ttm, revenue_streak, eps_growth_pct, 
                       year_high, year_low, capital_billion, last_vol_ma5, last_vol_ma20, 
                       year_high_2y, year_low_2y, gross_margin_pct, 
-                      operating_margin_pct, pretax_margin_pct, net_margin_pct,
+                      operating_margin_pct, pretax_margin_pct, net_margin_pct, consolidation_days, 
                       datetime.now().strftime('%Y-%m-%d')))
 
             # --- 寫入資料庫 (daily_prices) ---
@@ -400,6 +455,7 @@ def update_stock_data(progress_bar=None, status_text=None):
 
     conn.close()
 
+    print("\n🎉 全部流程結束！")
     # ==========================================
     # ★★★ GitHub 版本專屬：自動瘦身與壓縮 (.xz) ★★★
     # ==========================================
