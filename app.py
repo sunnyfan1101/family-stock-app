@@ -1098,33 +1098,33 @@ def main():
     # ==========================================
     # 頁面 3: 系統設定 (UI 更新版)
     # ==========================================
-    elif selected_page == "系統設定":
-        st.title("⚙️ 系統維護")
+    # elif selected_page == "系統設定":
+    #     st.title("⚙️ 系統維護")
         
-        st.info("💡 智慧增量更新：系統會自動檢查每檔股票的最後日期，只抓取缺漏的資料。若資料已是最新，會自動跳過。")
+    #     st.info("💡 智慧增量更新：系統會自動檢查每檔股票的最後日期，只抓取缺漏的資料。若資料已是最新，會自動跳過。")
 
-        # 這裡不使用 subprocess，改用直接呼叫 python 函數
-        if st.button("🔄 立即更新 (Smart Update)", type="primary"):
+    #     # 這裡不使用 subprocess，改用直接呼叫 python 函數
+    #     if st.button("🔄 立即更新 (Smart Update)", type="primary"):
             
-            # 1. 建立 UI 元件
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+    #         # 1. 建立 UI 元件
+    #         progress_bar = st.progress(0)
+    #         status_text = st.empty()
             
-            # 2. 執行更新 (傳入 UI 元件讓 fetch_data 控制)
-            try:
-                # 這裡要引用 fetch_data 模組
-                import fetch_data 
+    #         # 2. 執行更新 (傳入 UI 元件讓 fetch_data 控制)
+    #         try:
+    #             # 這裡要引用 fetch_data 模組
+    #             import fetch_data 
                 
-                # 開始跑回圈
-                fetch_data.update_stock_data(progress_bar, status_text)
+    #             # 開始跑回圈
+    #             fetch_data.update_stock_data(progress_bar, status_text)
                 
-                # 3. 完成
-                progress_bar.progress(100)
-                status_text.success("✅ 所有資料更新完成！請重新整理頁面以載入最新數據。")
-                st.balloons() # 放個氣球慶祝一下
+    #             # 3. 完成
+    #             progress_bar.progress(100)
+    #             status_text.success("✅ 所有資料更新完成！請重新整理頁面以載入最新數據。")
+    #             st.balloons() # 放個氣球慶祝一下
                 
-            except Exception as e:
-                st.error(f"更新發生錯誤: {e}")
+    #         except Exception as e:
+    #             st.error(f"更新發生錯誤: {e}")
 
 if __name__ == "__main__":
     main()
