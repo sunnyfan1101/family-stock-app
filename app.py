@@ -443,8 +443,8 @@ def main():
         
         selected_page = option_menu(
             "功能選單",
-            ["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"],
-            icons=['funnel', 'robot', 'gear'],
+            ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
+            icons=['funnel', 'robot'],
             menu_icon="cast",
             default_index=0,
             styles={
