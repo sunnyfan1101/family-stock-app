@@ -10,7 +10,7 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # 1. 股票基本資料表 (完整擴充版)
+    # 1. 股票基本資料表 (新增 consolidation_days_20)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS stocks (
         stock_id TEXT PRIMARY KEY,
@@ -19,81 +19,52 @@ def init_db():
         market_type TEXT,
         yahoo_symbol TEXT,
         
-        -- 基本面數據
-        eps REAL,                   -- 每股盈餘
-        pe_ratio REAL,              -- 本益比
-        pb_ratio REAL,              -- 股價淨值比
-        yield_rate REAL,            -- 殖利率 (%)
-        beta REAL,                  -- Beta 值 (波動率)
-        market_cap REAL,            -- 市值
-        capital REAL,               -- 股本 (億)
+        -- 基本面
+        eps REAL, pe_ratio REAL, pb_ratio REAL, yield_rate REAL, 
+        beta REAL, market_cap REAL, capital REAL,
         
-        -- 成長性數據
-        revenue_growth REAL,        -- 營收成長率 (YoY)
-        revenue_ttm REAL,           -- 近四季營收成長
-        revenue_streak INTEGER,     -- 營收連續成長年數
-        eps_growth REAL,            -- EPS 成長率 (YoY)
+        -- 成長與獲利
+        revenue_growth REAL, revenue_ttm REAL, revenue_streak INTEGER, eps_growth REAL,
+        gross_margin REAL, operating_margin REAL, pretax_margin REAL, net_margin REAL,
         
-        -- 獲利能力 (三率)
-        gross_margin REAL,          -- 毛利率
-        operating_margin REAL,      -- 營業利益率
-        pretax_margin REAL,         -- 稅前純益率
-        net_margin REAL,            -- 稅後純益率
+        -- 技術面
+        year_high REAL, year_low REAL, 
+        year_high_2y REAL, year_low_2y REAL,
+        vol_ma_5 REAL, vol_ma_20 REAL, 
+        consolidation_days INTEGER,      -- 10% 盤整
+        consolidation_days_20 INTEGER,   -- ★ 新增：20% 盤整
         
-        -- 技術面摘要
-        year_high REAL,             -- 近一年最高價
-        year_low REAL,              -- 近一年最低價
-        year_high_2y REAL,          -- 近兩年最高價
-        year_low_2y REAL,           -- 近兩年最低價
-        vol_ma_5 REAL,              -- 最新 5日均量 (股)
-        vol_ma_20 REAL,             -- 最新 20日均量 (股)
-        consolidation_days INTEGER, -- 盤整天數 (打底)
-        
-        last_updated TEXT           -- 最後更新日期
+        last_updated TEXT
     )
     ''')
     
     # 2. 股價歷史數據表
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS daily_prices (
-        stock_id TEXT,
-        date TEXT,
-        open REAL,
-        high REAL,
-        low REAL,
-        close REAL,
-        volume INTEGER,
-        change_pct REAL,            -- 漲跌幅 (%)
-        ma_5 REAL,                  -- 5日均線
-        ma_20 REAL,                 -- 20日均線 (月線)
-        ma_60 REAL,                 -- 60日均線 (季線)
-        
+        stock_id TEXT, date TEXT,
+        open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+        change_pct REAL, ma_5 REAL, ma_20 REAL, ma_60 REAL,
         FOREIGN KEY(stock_id) REFERENCES stocks(stock_id),
         PRIMARY KEY (stock_id, date)
     )
     ''')
     
-    # 3. 使用者策略儲存表 (之前漏掉這個，這很重要！)
+    # 3. ★ 新增：大盤統計數據表 (Market Stats)
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS user_presets (
-        name TEXT PRIMARY KEY,
-        settings TEXT               -- 儲存 JSON 格式的設定參數
+    CREATE TABLE IF NOT EXISTS market_stats (
+        date TEXT PRIMARY KEY,
+        new_low_count INTEGER,  -- 位階=0 (創新低) 的家數
+        updated_at TEXT
     )
     ''')
 
-    # 4. 自選股清單 (保留)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS watchlist (
-        stock_id TEXT PRIMARY KEY,
-        added_date TEXT,
-        note TEXT,
-        FOREIGN KEY(stock_id) REFERENCES stocks(stock_id)
-    )
-    ''')
+    # 4. 使用者策略與自選股
+    cursor.execute('CREATE TABLE IF NOT EXISTS user_presets (name TEXT PRIMARY KEY, settings TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS watchlist (stock_id TEXT PRIMARY KEY, added_date TEXT, note TEXT)')
 
     conn.commit()
     conn.close()
-    print("資料庫結構初始化完成 (含完整欄位)！")
+    print("資料庫結構初始化完成 (含 Market Stats)！")
 
 if __name__ == "__main__":
     init_db()

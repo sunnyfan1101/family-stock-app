@@ -81,7 +81,7 @@ def load_data(filters):
         s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
         s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
         s.eps_growth, s.gross_margin, 
-        s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days,
+        s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days, s.consolidation_days_20,
         {col_h} as year_high, {col_l} as year_low,
         d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
     FROM stocks s
@@ -140,9 +140,14 @@ def load_data(filters):
             conditions.append(f"{pos_sql} <= ?")
             params.append(filters.get('pos_max'))
 
-    if filters.get('consolidation_min') is not None:
-        conditions.append("s.consolidation_days >= ?")
-        params.append(filters.get('consolidation_min'))
+    if filters.get('consolidation_days') is not None:
+        days, threshold = filters.get('consolidation_days')
+        if threshold == 0.1:
+            conditions.append("s.consolidation_days >= ?")
+            params.append(days)
+        elif threshold == 0.2:
+            conditions.append("s.consolidation_days_20 >= ?")
+            params.append(days)
 
     if conditions:
         final_sql = base_sql + " AND " + " AND ".join(conditions)
@@ -420,8 +425,11 @@ def get_consolidation_range(option):
         "盤整 1 個月以上 (> 20天)": 20,
         "盤整 3 個月以上 (> 60天)": 60,
         "盤整半年以上 (> 120天)": 120,
-        "長期打底 (> 200天)": 200
+        "長期打底 (> 200天)": 200,
+        "大箱型 3 個月 (> 60天, ±20%)": (60, 0.2),  # ★ 新增
+        "大箱型半年 (> 120天, ±20%)": (120, 0.2)   # ★ 新增
     }
+    
     return mapping.get(option, None)
 
 
@@ -463,6 +471,36 @@ def main():
         st.title("🎯 智慧選股儀表板")
         
         conn = get_connection()
+        # --- 大盤健康度儀表板 ---
+        try:
+            # 只抓 2026 之後的數據 (依照你的需求)
+            market_df = pd.read_sql("SELECT * FROM market_stats WHERE date >= '2026-01-01' ORDER BY date", conn)
+            
+            with st.expander("📉 大盤健康度監控 (每日創新低家數)", expanded=True):
+                if not market_df.empty:
+                    # 畫 Bar Chart
+                    fig_market = px.bar(
+                        market_df, 
+                        x='date', 
+                        y='new_low_count',
+                        title='每日位階=0 (破底) 股票家數',
+                        labels={'new_low_count': '家數', 'date': '日期'},
+                        color='new_low_count',
+                        color_continuous_scale='Reds' # 越多越紅(恐慌)
+                    )
+                    fig_market.update_layout(height=300)
+                    st.plotly_chart(fig_market, use_container_width=True)
+                    
+                    # 顯示今日數據
+                    last_row = market_df.iloc[-1]
+                    st.caption(f"📅 最新統計 ({last_row['date']})：共有 **{last_row['new_low_count']}** 檔股票創新低")
+                else:
+                    st.info("尚無 2026 年後的統計數據 (請等待每日自動更新累積數據)")
+        except Exception as e:
+            # 第一次跑可能還沒這張表，先 pass
+            pass
+        conn.close()
+
         try:
             df_all = pd.read_sql("SELECT DISTINCT industry FROM stocks", conn)
             all_industries = ["全部"] + df_all['industry'].dropna().tolist()
@@ -605,7 +643,7 @@ def main():
                 vol_ma20_opt = st.selectbox("20日均量 (月量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol20')
                 change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
                 vol_spike_opt = st.selectbox("爆量偵測 (vs 20日均量)", ["不拘", "大於 1.5 倍", "大於 2 倍 (倍增)", "大於 3 倍 (爆量)", "大於 5 倍 (天量)"], key='sel_vol_spike')
-                consolidation_opt = st.selectbox("盤整/打底天數", ["不拘", "盤整 1 個月以上 (> 20天)", "盤整 3 個月以上 (> 60天)", "盤整半年以上 (> 120天)", "長期打底 (> 200天)"])
+                consolidation_opt = st.selectbox("盤整/打底型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"])
 
             with col3:
                 st.markdown("##### 💰 獲利能力")
@@ -658,7 +696,7 @@ def main():
                 'vol_ma20_min': vol_ma20_min, 'vol_ma20_max': vol_ma20_max,
                 'vol_spike_min': vol_spike_min,
                 'eps_growth_min': eps_growth_min, 'eps_growth_max': eps_growth_max,
-                'gross_min': gross_min, 'gross_max': gross_max, 'consolidation_min': consolidation_min,
+                'gross_min': gross_min, 'gross_max': gross_max, 'consolidation_days': get_consolidation_range(consolidation_opt), # 傳回 tuple
             }
 
         # --- 執行篩選 ---
