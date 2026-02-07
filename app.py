@@ -11,6 +11,7 @@ import time
 import lzma # 記得確認有 import lzma
 import shutil
 import os
+import ai_agent # ★ 新增這行
 
 # --- ★★★ GitHub 版本專屬：啟動時解壓縮資料庫 ★★★ ---
 if not os.path.exists("stock_data.db") and os.path.exists("stock_data.db.xz"):
@@ -32,25 +33,63 @@ st.set_page_config(page_title="StockAI 投資助理", layout="wide", page_icon="
 # 自定義 CSS 讓介面更乾淨
 st.markdown("""
 <style>
-    /* 隱藏預設的 Streamlit 選單和 Footer */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    
-    /* 調整指標卡片的樣式 */
-    div[data-testid="stMetricValue"] {
-        font-size: 24px;
-        color: #FFD700; /* 金色字體 */
+    /* 1. 全局設定 */
+    .stApp {
+        background-color: #0E1117; /* 深色背景 */
     }
     
-    /* 讓表格標頭明顯一點 */
-    thead tr th:first-child {display:none}
-    tbody th {display:none}
+    /* 2. 隱藏預設元件 */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;} /* 隱藏上方紅線 */
     
-    /* 按鈕樣式 */
+    /* 3. 指標卡片 (Metrics) 優化 */
+    div[data-testid="stMetricValue"] {
+        font-size: 28px !important;
+        font-weight: bold;
+        color: #00FF7F; /* 亮綠色數字 */
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 14px !important;
+        color: #B0B0B0;
+    }
+    
+    /* 4. 讓 Expander 像個卡片 */
+    .streamlit-expanderHeader {
+        background-color: #262730;
+        border-radius: 10px;
+        color: white;
+        font-weight: bold;
+    }
+    
+    /* 5. 按鈕樣式 (更圓潤) */
     .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        height: 3em;
+        border-radius: 10px;
+        font-weight: bold;
+        border: 1px solid #4B4B4B;
+    }
+    
+    /* 6. 表格優化 (讓選中行更明顯) */
+    .stDataFrame {
+        border: 1px solid #333;
+        border-radius: 10px;
+    }
+    
+    /* 7. Tabs 樣式 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #1E1E1E;
+        border-radius: 10px 10px 0px 0px;
+        gap: 1px;
+        padding: 10px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #FF4B4B; /* 選中時紅色 */
+        color: white;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -230,9 +269,9 @@ def plot_candlestick(df, stock_id, name, period_type="日線"):
     fig = make_subplots(
         rows=2, cols=1, 
         shared_xaxes=True,  # 關鍵：這會讓上下圖表的 X 軸連動
-        vertical_spacing=0.02, # 縮小圖表間距
+        vertical_spacing=0.08, # ★ 修改點 1：加大垂直間距 (原本 0.02 太擠了，改成 0.08)
         subplot_titles=(title_text, '成交量'),
-        row_width=[0.25, 0.75] # 調整比例：成交量佔 25%
+        row_heights=[0.7, 0.3]   # ★ 修改點 2：使用新版寫法設定高度比例 (上70%, 下30%)
     )
     
     # 3. K線圖 (上圖)
@@ -444,41 +483,293 @@ def delete_user_preset(name):
 # ==========================================
 
 def main():
-    
-    # --- 左側導航欄 (使用 streamlit-option-menu 美化) ---
-    with st.sidebar:
-        st.image("https://cdn-icons-png.flaticon.com/512/3314/3314323.png", width=50) # 可換成自己的 Logo
+    # --- 1. 初始化 Session State ---
+    if "messages" not in st.session_state:  # ★ AI 聊天記錄
+        st.session_state.messages = []
         
-        selected_page = option_menu(
-            "功能選單",
-            ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
-            icons=['funnel', 'robot'],
-            menu_icon="cast",
+    if "ai_api_ready" not in st.session_state: # ★ AI API 狀態
+        # 這裡會去讀取你的 secrets.toml 設定
+        st.session_state.ai_api_ready = ai_agent.configure_genai()
+    
+    # 確保頁面記憶功能存在
+    if "current_main_page" not in st.session_state:
+        st.session_state.current_main_page = "條件篩選 (Screener)"
+        
+    # --- 左側導航欄 (Dual Mode) ---
+    with st.sidebar:
+        st.image("Sunny.png", width=50) 
+        
+        # 1. 雙模式切換
+        sidebar_mode = option_menu(
+            menu_title=None,
+            options=["功能操作", "AI 顧問"],
+            icons=['sliders', 'chat-dots-fill'], 
             default_index=0,
-            styles={
-                "container": {"padding": "5px", "background-color": "#262730"},
-                "icon": {"color": "orange", "font-size": "20px"}, 
-                "nav-link": {"font-size": "16px", "text-align": "left", "margin":"0px", "--hover-color": "#444"},
-                "nav-link-selected": {"background-color": "#FF4B4B"},
-            }
+            orientation="horizontal",
+            styles={"icon": {"color": "lime"}, "nav-link": {"font-size": "14px", "padding": "5px"}, "nav-link-selected": {"background-color": "#FF4B4B"}}
         )
+        # ★★★ 新增這段：動態寬度控制 ★★★
+        if sidebar_mode == "AI 顧問":
+            # AI 模式：寬一點
+            st.markdown(
+                """
+                <style>
+                [data-testid="stSidebar"] {
+                    min-width: 30% !important;
+                    max-width: 30% !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            # 功能操作模式：窄一點 (你指定的 20%)
+            st.markdown(
+                """
+                <style>
+                [data-testid="stSidebar"] {
+                    min-width: 20% !important;
+                    max-width: 20% !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+        # ==========================================
+        # 模式 A: 功能操作 (只放導航和策略管理)
+        # ==========================================
+        if sidebar_mode == "功能操作":
+            # 導航選單
+            selected_page = option_menu(
+                "功能選單",
+                ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
+                icons=['funnel', 'robot'],
+                menu_icon="cast",
+                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)"].index(st.session_state.current_main_page),
+                styles={"container": {"padding": "5px", "background-color": "#262730"},"icon": {"color": "lime", "font-size": "20px"}}
+            )
+            st.session_state.current_main_page = selected_page
+
+            # 只在 Screener 頁面顯示「策略管理」和「位階設定」
+            # [app.py] 側邊欄 > 條件篩選區塊
+
+            if st.session_state.current_main_page == "條件篩選 (Screener)":
+                st.markdown("---")
+                st.subheader("⚙️ 參數設定")
+                
+                # 1. 位階基準
+                period_mode = st.radio("位階計算基準", ["近 1 年 (標準)", "近 2 年 (長線)"], horizontal=True, key="period_radio_sidebar")
+                period_val = '2y' if "2" in period_mode else '1y'
+                st.session_state['period_val'] = period_val
+
+                # 2. ★★★ 關鍵修正：把策略定義搬到這裡 (按鈕外面) ★★★
+                # 這樣不管有沒有按按鈕，電腦都找得到這些資料
+                default_strategies = {
+                    "巴菲特護城河 (穩健)": {
+                        "capital": "大型股 (> 50億)", "beta": "小於 1 (穩健)", "yield": "3% 以上 (及格)", "eps": "0 元以上 (賺錢)",
+                        "pe": "不拘", "revenue": "不拘", "streak": "連增 1 年以上", "position": "不拘"
+                    },
+                    "彼得林區成長 (爆發)": {
+                        "revenue": "高成長 (> 20%)", "pe": "20 倍以下 (正常)", "capital": "中型股 (10億 ~ 50億)",
+                        "yield": "不拘", "beta": "不拘", "streak": "不拘", "position": "不拘"
+                    },
+                    "低檔轉機股 (抄底)": {
+                        "position": "底部 (0 ~ 0.2)", "revenue": "成長 (> 0%)", "change": "不拘",
+                        "pe": "不拘", "capital": "不拘", "streak": "不拘"
+                    }
+                }
+                
+                # 初始化 filter_keys (如果之前沒定義過)
+                filter_keys = ['sel_industry', 'sel_price', 'sel_capital', 'sel_pos', 'sel_vol5', 'sel_vol20', 'sel_change', 
+                               'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross']
+
+                # 3. 儲存策略按鈕 (這裡只留儲存邏輯)
+                st.markdown("---")
+                with st.popover("💾 儲存目前篩選為策略", use_container_width=True):
+                    new_preset_name = st.text_input("策略名稱", placeholder="例如：我的存股名單", key="save_preset_input_sidebar")
+                    
+                    if st.button("確認儲存", type="primary", key="save_preset_btn_sidebar"):
+                        if new_preset_name:
+                            # 收集目前的設定值
+                            current_settings = {
+                                "industry": st.session_state.sel_industry,
+                                "price": st.session_state.sel_price,
+                                "capital": st.session_state.sel_capital,
+                                "position": st.session_state.sel_pos,
+                                "vol5": st.session_state.sel_vol5,
+                                "vol20": st.session_state.sel_vol20,
+                                "change": st.session_state.sel_change,
+                                "revenue": st.session_state.sel_rev,
+                                "streak": st.session_state.sel_streak,
+                                "pe": st.session_state.sel_pe,
+                                "yield": st.session_state.sel_yield,
+                                "beta": st.session_state.sel_beta,
+                                "eps": st.session_state.sel_eps,
+                                "gross": st.session_state.sel_gross
+                            }
+                            if save_user_preset(new_preset_name, current_settings):
+                                st.success(f"已儲存：{new_preset_name}")
+                                time.sleep(1)
+                                st.rerun()
+                        else:
+                            st.warning("請輸入名稱")
+
+                # 4. 載入策略 (下拉選單)
+                # 因為 default_strategies 已經在上面定義了，這裡就不會報錯了！
+                saved_presets = get_user_presets()
+                all_strategies = default_strategies.copy() # ★ 這裡終於找得到變數了
+                
+                for name, json_str in saved_presets.items():
+                    try: all_strategies[f"👤 {name}"] = json.loads(json_str)
+                    except: pass
+                
+                st.write("") 
+                selected_strat_name = st.selectbox("📂 載入策略", ["-- 請選擇 --"] + list(all_strategies.keys()), key="load_preset_sidebar")
+                
+                if st.button("📥 套用此策略", use_container_width=True, key="apply_preset_btn"):
+                    if selected_strat_name != "-- 請選擇 --":
+                        strat_params = all_strategies[selected_strat_name]
+                        # 重置
+                        for k in filter_keys:
+                            if k == 'sel_industry': st.session_state[k] = ["全部"]
+                            else: st.session_state[k] = "不拘"
+                        # 套用 (更新 Session State)
+                        if "industry" in strat_params: st.session_state['sel_industry'] = strat_params["industry"]
+                        if "capital" in strat_params: st.session_state['sel_capital'] = strat_params["capital"]
+                        if "beta" in strat_params: st.session_state['sel_beta'] = strat_params["beta"]
+                        if "yield" in strat_params: st.session_state['sel_yield'] = strat_params["yield"]
+                        if "eps" in strat_params: st.session_state['sel_eps'] = strat_params["eps"]
+                        if "revenue" in strat_params: st.session_state['sel_rev'] = strat_params["revenue"]
+                        if "pe" in strat_params: st.session_state['sel_pe'] = strat_params["pe"]
+                        if "streak" in strat_params: st.session_state['sel_streak'] = strat_params["streak"]
+                        if "position" in strat_params: st.session_state['sel_pos'] = strat_params["position"]
+                        if "gross" in strat_params: st.session_state['sel_gross'] = strat_params["gross"]
+                        if "vol5" in strat_params: st.session_state['sel_vol5'] = strat_params["vol5"]
+                        if "vol20" in strat_params: st.session_state['sel_vol20'] = strat_params["vol20"]
+                        if "change" in strat_params: st.session_state['sel_change'] = strat_params["change"]
+                        if "price" in strat_params: st.session_state['sel_price'] = strat_params["price"]
+                        st.rerun()
+
+                # 5. 重置與刪除 (這部分保持原樣)
+                col_reset, col_del = st.columns(2)
+                with col_reset:
+                    if st.button("🔄 重置", use_container_width=True, key="reset_btn_sidebar"):
+                        for k in filter_keys:
+                            if k == 'sel_industry': st.session_state[k] = ["全部"]
+                            else: st.session_state[k] = "不拘"
+                        st.rerun()
+                
+                with col_del:
+                    with st.popover("🗑️ 刪除", use_container_width=True):
+                        del_name = st.selectbox("選擇刪除", list(saved_presets.keys()), key="del_preset_select")
+                        if st.button("確認", key="del_preset_confirm"):
+                            delete_user_preset(del_name)
+                            st.rerun()
+
+        # ==========================================
+        # 模式 B: AI 顧問 (聊天室)
+        # ==========================================
+        elif sidebar_mode == "AI 顧問":
+            
+            st.markdown("---")
+            st.subheader("💬 AI 投資顧問")
+            
+            # 0. 預先載入股票清單 (快取)
+            stock_map = ai_agent.get_stock_map()
+
+            # ★★★ 關鍵修正：先顯示歷史訊息，再處理輸入框 ★★★
+            # 這樣最新的對話就會依序排列，不會跑到上面去
+            for msg in st.session_state.messages:
+                # 這裡過濾掉 system prompt，只顯示 user 和 assistant
+                if msg["role"] in ["user", "assistant"]:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+
+            # 2. 輸入框邏輯 (放在歷史訊息顯示之後)
+            if prompt := st.chat_input("輸入股票名稱(如:微星)或直接提問...", key="ai_invest_chat"):
+                
+                # A. 顯示使用者輸入 (並立刻存入 session)
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                # --- 核心邏輯開始 ---
+                
+                # 1. 嘗試從對話中抓股票代號
+                detected_stocks = ai_agent.extract_mentioned_stocks(prompt, stock_map)
+                
+                # 2. 決定「目標股票 (target_df)」是誰
+                target_df = pd.DataFrame()
+                debug_msg = ""
+                
+                if detected_stocks:
+                    # 【情況 A】使用者明確提到股票
+                    target_df = ai_agent.fetch_stocks_data(detected_stocks)
+                    debug_msg = f"🔍 深度分析：{', '.join(target_df['name'].tolist())}"
+                
+                elif 'current_stock_row' in st.session_state and st.session_state.current_stock_row is not None:
+                    # 【情況 B】沒提到，但左邊列表有「選中」股票
+                    row = st.session_state.current_stock_row
+                    
+                    if isinstance(row, pd.Series):
+                        target_df = pd.DataFrame([row])
+                    else:
+                        target_df = row
+                    
+                    try: name = target_df['name'].iloc[0] 
+                    except: name = "選中股"
+                    debug_msg = f"👉 分析目前選中股：{name}"
+
+                # 3. 根據是否有「目標股票」來分流
+                if not target_df.empty:
+                    # === 路線一：有目標 -> 走個股分析 AI ===
+                    with st.chat_message("assistant"):
+                        st.caption(debug_msg) # 顯示小提示
+                        
+                        # 產生數據 Context
+                        stock_context = ai_agent.generate_context(target_df)
+                        
+                        try:
+                            with st.spinner("AI 正在分析數據..."): 
+                                response_stream = ai_agent.get_ai_response(prompt, stock_context, st.session_state.messages)
+                                response_text = st.write_stream(response_stream)
+                            
+                            # 存入歷史
+                            st.session_state.messages.append({"role": "assistant", "content": response_text})
+                        except Exception as e:
+                            st.error(f"AI 發生錯誤: {e}")
+
+                else:
+                    # === 路線二：沒目標 -> 走通用顧問 AI (不查資料庫) ===
+                    with st.chat_message("assistant"):
+                        try:
+                            with st.spinner("AI 正在思考..."):
+                                response_stream = ai_agent.get_general_response(prompt, st.session_state.messages)
+                                response_text = st.write_stream(response_stream)
+                            
+                            # 存入歷史
+                            st.session_state.messages.append({"role": "assistant", "content": response_text})
+                            
+                        except Exception as e:
+                            st.error(f"AI 發生錯誤: {e}")
+
+
         
     # ==========================================
     # 頁面 1: 條件篩選 (Screener)
     # ==========================================
     # --- 條件篩選 (Screener) ---
-    if selected_page == "條件篩選 (Screener)":
+    if st.session_state.current_main_page == "條件篩選 (Screener)":
         st.title("🎯 智慧選股儀表板")
         
         conn = get_connection()
-        # --- 大盤健康度儀表板 ---
+        
+        # 1. 抓大盤健康度
         try:
-            # 只抓 2026 之後的數據 (依照你的需求)
             market_df = pd.read_sql("SELECT * FROM market_stats WHERE date >= '2026-01-01' ORDER BY date", conn)
             
-            with st.expander("📉 大盤健康度監控 (每日創新低家數)", expanded=True):
+            with st.expander("📉 大盤健康度監控 (每日創新低家數)", expanded=False):
                 if not market_df.empty:
-                    # 畫 Bar Chart
                     fig_market = px.bar(
                         market_df, 
                         x='date', 
@@ -486,25 +777,28 @@ def main():
                         title='每日位階=0 (破底) 股票家數',
                         labels={'new_low_count': '家數', 'date': '日期'},
                         color='new_low_count',
-                        color_continuous_scale='Reds' # 越多越紅(恐慌)
+                        color_continuous_scale='Reds'
                     )
                     fig_market.update_layout(height=300)
-                    st.plotly_chart(fig_market, use_container_width=True)
+                    st.plotly_chart(fig_market, width='stretch')
                     
-                    # 顯示今日數據
                     last_row = market_df.iloc[-1]
                     st.caption(f"📅 最新統計 ({last_row['date']})：共有 **{last_row['new_low_count']}** 檔股票創新低")
                 else:
-                    st.info("尚無 2026 年後的統計數據 (請等待每日自動更新累積數據)")
+                    st.info("尚無 2026 年後的統計數據")
         except Exception as e:
-            # 第一次跑可能還沒這張表，先 pass
+            # 第一次跑可能還沒這張表，先 pass，但不影響後面
             pass
-        conn.close()
 
+        # 2. 抓產業分類 (這時候 conn 還活著！)
         try:
             df_all = pd.read_sql("SELECT DISTINCT industry FROM stocks", conn)
             all_industries = ["全部"] + df_all['industry'].dropna().tolist()
-        except: all_industries = ["全部"]
+        except Exception as e:
+            st.error(f"讀取產業失敗: {e}") # 讓錯誤顯示出來，方便除錯
+            all_industries = ["全部"]
+            
+        # 3. 任務結束，掛電話
         conn.close()
 
         # --- 定義內建策略 ---
@@ -533,133 +827,68 @@ def main():
                 else: st.session_state[k] = "不拘"
 
         # ==========================================
-        # ★★★ 側邊欄：篩選控制台 (整合所有操作) ★★★
-        # ==========================================
-        with st.sidebar:
-            st.markdown("---")
-            st.subheader("🛠️ 篩選控制台")
-
-            # 1. 位階基準 (搬過來了)
-            period_mode = st.radio("位階計算基準", ["近 1 年 (標準)", "近 2 年 (長線)"], horizontal=True)
-            period_val = '2y' if "2" in period_mode else '1y'
-            st.markdown("---")
-
-            # 2. 儲存策略按鈕 (搬過來了)
-            # 使用 popover 讓介面更乾淨
-            with st.popover("💾 儲存目前條件為策略", use_container_width=True):
-                new_preset_name = st.text_input("策略名稱", placeholder="例如：我的存股名單")
-                if st.button("確認儲存", type="primary"):
-                    if new_preset_name:
-                        current_settings = {
-                            "industry": st.session_state.sel_industry,
-                            "price": st.session_state.sel_price,
-                            "capital": st.session_state.sel_capital,
-                            "position": st.session_state.sel_pos,
-                            "vol5": st.session_state.sel_vol5,
-                            "vol20": st.session_state.sel_vol20,
-                            "change": st.session_state.sel_change,
-                            "revenue": st.session_state.sel_rev,
-                            "streak": st.session_state.sel_streak,
-                            "pe": st.session_state.sel_pe,
-                            "yield": st.session_state.sel_yield,
-                            "beta": st.session_state.sel_beta,
-                            "eps": st.session_state.sel_eps,
-                            "gross": st.session_state.sel_gross
-                        }
-                        if save_user_preset(new_preset_name, current_settings):
-                            st.success(f"已儲存：{new_preset_name}")
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.warning("請輸入名稱")
-
-            # 3. 載入策略 (下拉選單)
-            saved_presets = get_user_presets()
-            all_strategies = default_strategies.copy()
-            for name, json_str in saved_presets.items():
-                try: all_strategies[f"👤 {name}"] = json.loads(json_str)
-                except: pass
-            
-            st.write("") # 間距
-            selected_strat_name = st.selectbox("📂 載入策略", ["-- 請選擇 --"] + list(all_strategies.keys()))
-            
-            if st.button("📥 套用此策略", use_container_width=True):
-                if selected_strat_name != "-- 請選擇 --":
-                    strat_params = all_strategies[selected_strat_name]
-                    # 重置
-                    for k in filter_keys:
-                        if k == 'sel_industry': st.session_state[k] = ["全部"]
-                        else: st.session_state[k] = "不拘"
-                    # 套用
-                    if "industry" in strat_params: st.session_state['sel_industry'] = strat_params["industry"]
-                    if "capital" in strat_params: st.session_state['sel_capital'] = strat_params["capital"]
-                    if "beta" in strat_params: st.session_state['sel_beta'] = strat_params["beta"]
-                    if "yield" in strat_params: st.session_state['sel_yield'] = strat_params["yield"]
-                    if "eps" in strat_params: st.session_state['sel_eps'] = strat_params["eps"]
-                    if "revenue" in strat_params: st.session_state['sel_rev'] = strat_params["revenue"]
-                    if "pe" in strat_params: st.session_state['sel_pe'] = strat_params["pe"]
-                    if "streak" in strat_params: st.session_state['sel_streak'] = strat_params["streak"]
-                    if "position" in strat_params: st.session_state['sel_pos'] = strat_params["position"]
-                    if "gross" in strat_params: st.session_state['sel_gross'] = strat_params["gross"]
-                    if "vol5" in strat_params: st.session_state['sel_vol5'] = strat_params["vol5"]
-                    if "vol20" in strat_params: st.session_state['sel_vol20'] = strat_params["vol20"]
-                    if "change" in strat_params: st.session_state['sel_change'] = strat_params["change"]
-                    if "price" in strat_params: st.session_state['sel_price'] = strat_params["price"]
-                    st.rerun()
-
-            # 4. 重置與刪除
-            col_reset, col_del = st.columns(2)
-            with col_reset:
-                if st.button("🔄 重置", use_container_width=True):
-                    for k in filter_keys:
-                        if k == 'sel_industry': st.session_state[k] = ["全部"]
-                        else: st.session_state[k] = "不拘"
-                    st.rerun()
-            
-            with col_del:
-                with st.popover("🗑️ 刪除", use_container_width=True):
-                    del_name = st.selectbox("選擇刪除", list(saved_presets.keys()))
-                    if st.button("確認"):
-                        delete_user_preset(del_name)
-                        st.rerun()
-
-        # ==========================================
         # 主畫面：設定篩選條件 (維持原樣)
         # ==========================================
-        with st.expander("🛠️ 設定篩選條件 (含股本、均量、營收連增)", expanded=True):
-            col1, col2, col3, col4 = st.columns(4)
+        # [app.py] 請替換整個「設定篩選條件」的 with st.expander 區塊
+
+        # 改用 st.container 讓它有一點邊距
+        with st.container():
+            st.markdown("### 🛠️ 智慧選股條件")
             
-            with col1:
-                st.markdown("##### 🏢 基本條件")
-                search_txt = st.text_input("🔍 搜尋股票", placeholder="例如：2330 或 台積電", key="search_input")
-                selected_industry = st.multiselect("產業分類", all_industries, key='sel_industry')
-                price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上 (高價)", "50 ~ 100 元 (中價)", "10 ~ 50 元 (銅板)", "10 元以下 (低價)"], key='sel_price')
-                capital_opt = st.selectbox("股本規模", ["不拘", "小型股 (< 10億)", "中型股 (10億 ~ 50億)", "大型股 (> 50億)", "超大型權值股 (> 200億)"], key='sel_capital')
+            # 第一層：全域搜尋與產業 (這是最常用的，放最上面)
+            col_top1, col_top2 = st.columns([1, 2])
+            with col_top1:
+                 search_txt = st.text_input("🔍 快速搜尋", placeholder="輸入代號或名稱 (如: 2330)", key="search_input")
+            with col_top2:
+                 selected_industry = st.multiselect("🏭 鎖定產業", all_industries, key='sel_industry', placeholder="選擇產業 (可多選)")
+
+            # 第二層：進階篩選 (使用 Tabs 分頁，讓畫面不擁擠)
+            st.write("") # 空行
             
-            with col2:
-                st.markdown("##### 📈 技術面")
-                position_opt = st.selectbox(f"位階高低 ({period_val.upper()})", ["不拘", "底部 (0 ~ 0.2)", "低檔 (0.2 ~ 0.4)", "中階 (0.4 ~ 0.6)", "高檔 (0.6 ~ 0.8)", "頭部 (0.8 ~ 1.0)"], key='sel_pos')
-                vol_ma5_opt = st.selectbox("5日均量 (週量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol5')
-                vol_ma20_opt = st.selectbox("20日均量 (月量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol20')
-                change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
-                vol_spike_opt = st.selectbox("爆量偵測 (vs 20日均量)", ["不拘", "大於 1.5 倍", "大於 2 倍 (倍增)", "大於 3 倍 (爆量)", "大於 5 倍 (天量)"], key='sel_vol_spike')
-                consolidation_opt = st.selectbox("盤整/打底型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"])
+            # 定義分頁
+            tab1, tab2, tab3, tab4 = st.tabs(["🏢 基本門檻", "📈 技術籌碼", "💰 獲利財報", "💎 股利估值"])
+            
+            with tab1: # 基本門檻
+                c1, c2 = st.columns(2)
+                with c1:
+                    price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上 (高價)", "50 ~ 100 元 (中價)", "10 ~ 50 元 (銅板)", "10 元以下 (低價)"], key='sel_price')
+                    capital_opt = st.selectbox("股本規模", ["不拘", "小型股 (< 10億)", "中型股 (10億 ~ 50億)", "大型股 (> 50億)", "超大型權值股 (> 200億)"], key='sel_capital')
+                with c2:
+                    change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
+            
+            with tab2: # 技術籌碼
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    # 先從 Session State 撈出來，如果沒有就預設 '1y'
+                    current_period = st.session_state.get('period_val', '1y')
+                    position_opt = st.selectbox(f"位階高低 ({current_period.upper()})", ["不拘", "底部 (0 ~ 0.2)", "低檔 (0.2 ~ 0.4)", "中階 (0.4 ~ 0.6)", "高檔 (0.6 ~ 0.8)", "頭部 (0.8 ~ 1.0)"], key='sel_pos')
+                    consolidation_opt = st.selectbox("盤整型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"])
+                with c2:
+                    vol_ma5_opt = st.selectbox("5日均量 (週量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol5')
+                    vol_ma20_opt = st.selectbox("20日均量 (月量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol20')
+                with c3:
+                    vol_spike_opt = st.selectbox("爆量偵測", ["不拘", "大於 1.5 倍", "大於 2 倍 (倍增)", "大於 3 倍 (爆量)", "大於 5 倍 (天量)"], key='sel_vol_spike')
+                    beta_opt = st.selectbox("Beta (波動度)", ["不拘", "大於 1 (活潑)", "大於 1.5 (攻擊)", "小於 1 (穩健)"], key='sel_beta')
 
-            with col3:
-                st.markdown("##### 💰 獲利能力")
-                revenue_opt = st.selectbox("營收成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "爆發 (> 50%)", "衰退 (< 0%)"], key='sel_rev')
-                streak_opt = st.selectbox("營收連增 (Streak)", ["不拘", "連增 1 年以上", "連增 2 年以上", "連增 3 年以上"], key='sel_streak')
-                gross_opt = st.selectbox("毛利率 (Gross)", ["不拘", "正毛利 (> 0%)", "高毛利 (> 20%)", "超高毛利 (> 40%)", "頂級毛利 (> 60%)"], key='sel_gross')
-                pe_opt = st.selectbox("本益比 (PE)", ["不拘", "10 倍以下 (低估)", "15 倍以下 (合理)", "20 倍以下 (正常)", "25 倍以上 (成長)"], key='sel_pe')
-                eps_growth_opt = st.selectbox("EPS 成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "翻倍 (> 100%)", "衰退 (< 0%)"], key='sel_eps_growth')
+            with tab3: # 獲利財報
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    revenue_opt = st.selectbox("營收成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "爆發 (> 50%)", "衰退 (< 0%)"], key='sel_rev')
+                    streak_opt = st.selectbox("營收連增 (Streak)", ["不拘", "連增 1 年以上", "連增 2 年以上", "連增 3 年以上"], key='sel_streak')
+                with c2:
+                    eps_growth_opt = st.selectbox("EPS 成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "翻倍 (> 100%)", "衰退 (< 0%)"], key='sel_eps_growth')
+                    eps_opt = st.selectbox("EPS 數值", ["不拘", "0 元以上 (賺錢)", "3 元以上 (穩健)", "5 元以上 (高獲利)"], key='sel_eps')
+                with c3:
+                    gross_opt = st.selectbox("毛利率", ["不拘", "正毛利 (> 0%)", "高毛利 (> 20%)", "超高毛利 (> 40%)", "頂級毛利 (> 60%)"], key='sel_gross')
 
-            with col4:
-                st.markdown("##### 💎 股利與籌碼")
-                yield_opt = st.selectbox("殖利率 (%)", ["不拘", "3% 以上 (及格)", "5% 以上 (高股息)", "7% 以上 (超高配)"], key='sel_yield')
-                beta_opt = st.selectbox("Beta (波動)", ["不拘", "大於 1 (活潑)", "大於 1.5 (攻擊)", "小於 1 (穩健)"], key='sel_beta')
-                eps_opt = st.selectbox("EPS", ["不拘", "0 元以上 (賺錢)", "3 元以上 (穩健)", "5 元以上 (高獲利)"], key='sel_eps')
+            with tab4: # 股利估值
+                c1, c2 = st.columns(2)
+                with c1:
+                    pe_opt = st.selectbox("本益比 (PE)", ["不拘", "10 倍以下 (低估)", "15 倍以下 (合理)", "20 倍以下 (正常)", "25 倍以上 (成長)"], key='sel_pe')
+                with c2:
+                    yield_opt = st.selectbox("殖利率 (%)", ["不拘", "3% 以上 (及格)", "5% 以上 (高股息)", "7% 以上 (超高配)"], key='sel_yield')
 
-            # 轉換選單邏輯 (略，因為這段很長且無須修改，維持原樣即可)
+            # --- 邏輯轉換維持原樣 (不用改) ---
             vol_map = {"不拘": None, "大於 1.5 倍": 1.5, "大於 2 倍 (倍增)": 2.0, "大於 3 倍 (爆量)": 3.0, "大於 5 倍 (天量)": 5.0}
             vol_spike_min = vol_map.get(vol_spike_opt)
             eps_map = {"成長 (> 0%)": (0, None), "高成長 (> 20%)": (20, None), "翻倍 (> 100%)": (100, None), "衰退 (< 0%)": (None, 0)}
@@ -682,7 +911,7 @@ def main():
 
             filters = {
                 'industry': selected_industry if "全部" not in selected_industry else None,
-                'period': period_val,
+                'period': st.session_state.get('period_val', '1y'),
                 'pe_min': pe_min, 'pe_max': pe_max, 'price_min': price_min, 'price_max': price_max,
                 'yield_min': yield_min, 'yield_max': yield_max, 'eps_min': eps_min, 'eps_max': eps_max,
                 'change_min': change_min, 'change_max': change_max, 
@@ -696,7 +925,7 @@ def main():
                 'vol_ma20_min': vol_ma20_min, 'vol_ma20_max': vol_ma20_max,
                 'vol_spike_min': vol_spike_min,
                 'eps_growth_min': eps_growth_min, 'eps_growth_max': eps_growth_max,
-                'gross_min': gross_min, 'gross_max': gross_max, 'consolidation_days': get_consolidation_range(consolidation_opt), # 傳回 tuple
+                'gross_min': gross_min, 'gross_max': gross_max, 'consolidation_days': get_consolidation_range(consolidation_opt),
             }
 
         # --- 執行篩選 ---
@@ -712,7 +941,10 @@ def main():
 
         st.markdown("---")
         
+        # [app.py] 請替換 if not df_result.empty: 之後的所有內容
+
         if not df_result.empty:
+            # 1. 顯示產業熱力圖 (放在摺疊區塊)
             with st.expander("🗺️ 產業資金流向 (熱力圖) - 點擊展開", expanded=False):
                 df_treemap = df_result.copy()
                 df_treemap['industry'] = df_treemap['industry'].fillna('其他')
@@ -724,419 +956,458 @@ def main():
                     path=['industry', 'name'], 
                     values='market_cap',       
                     color='change_pct',        
-                    color_continuous_scale=['#00FF00', '#FFFFFF', '#FF0000'], 
+                    color_continuous_scale=['#00FF00', '#1E1E1E', '#FF0000'], 
                     range_color=[-5, 5],       
-                    title=f"🔥 篩選結果產業熱力圖 (共 {len(df_result)} 檔，方塊大小=市值)"
+                    title=f"🔥 篩選結果產業熱力圖 (共 {len(df_result)} 檔)"
                 )
-                fig_map.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=400)
-                st.plotly_chart(fig_map, width='stretch')
+                fig_map.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=350, paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_map, use_container_width=True)
 
-        col_list, col_detail = st.columns([1, 2])
-        
-        with col_list:
-            st.subheader(f"📋 篩選清單 ({len(df_result)})")
-            if not df_result.empty:
+            st.write("") # 空行分隔
+
+            # 2. 左右佈局：左邊清單 (40%)，右邊詳情 (60%)
+            col_list, col_detail = st.columns([4, 6])
+            
+            with col_list:
+                st.markdown(f"### 📋 篩選清單 ({len(df_result)})")
+                st.caption("👇 點擊表格任一列，右側查看詳細分析")
+                
                 df_show = df_result.copy()
 
-                # 轉換單位 (雖然不顯示，但為了保險起見還是算一下)
+                # 轉換單位
                 df_show['vol_ma_5'] = pd.to_numeric(df_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
                 df_show['vol_ma_20'] = pd.to_numeric(df_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
                 
-                # ★★★ 關鍵修改：定義要顯示的欄位 (移除均量與漲跌，加入三率) ★★★
+                # 2. 補齊欄位 (加入週/月均量)
                 all_cols = [
-                    'stock_id', 'name', 'industry', 
-                    'close', 'vol_spike', 'position', 'beta',
+                    'stock_id', 'name', 'industry', 'similarity',
+                    'close', 'change_pct', 'vol_spike', 'position', 'beta',
                     'revenue_growth', 'eps_growth', 'revenue_streak',
                     'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
-                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 加入新三率
-                    'capital'
+                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 加入三率
+                    'consolidation_days', 'capital'
                 ]
                 
-                # 防呆
+                # 防呆：確保欄位存在
                 for c in all_cols:
                     if c not in df_show.columns: df_show[c] = 0
-                
-                df_show = df_show[all_cols]
 
-                # 強制轉數字
+                # 4. 強制轉數字
                 numeric_cols = [
-                    'close', 'vol_spike', 'position', 'beta',
+                    'similarity', 'close', 'change_pct', 'vol_spike', 'position', 'beta',
                     'revenue_growth', 'eps_growth', 'revenue_streak',
-                    'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital', 
-                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin' # ★ 加入新三率
+                    'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital',
+                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 'consolidation_days', # ★ 加入三率
                 ]
                 for c in numeric_cols:
                     df_show[c] = pd.to_numeric(df_show[c], errors='coerce').fillna(0)
 
-                # 表格顯示
+                # 5. 表格顯示設定 (同步篩選頁面的風格)
                 event = st.dataframe(
                     df_show.style.format({
                         'close': '{:.2f}', 
+                        'change_pct': '{:+.2f}%',
                         'vol_spike': '{:.1f}倍', 
-                        'position': '{:.2f}',
+                        'position': '{:.2f}', 
                         'beta': '{:.2f}',
-                        'revenue_growth': '{:+.2f}%',
-                        'eps_growth': '{:+.2f}%',
+                        'revenue_growth': '{:+.2f}%', 
+                        'eps_growth': '{:+.2f}%', 
                         'revenue_streak': '{:.0f}年',
                         'pe_ratio': '{:.1f}', 
                         'pb_ratio': '{:.2f}',
                         'yield_rate': '{:.2f}%', 
                         'gross_margin': '{:.2f}%',
-                        'operating_margin': '{:.2f}%', # ★
-                        'pretax_margin': '{:.2f}%',    # ★
-                        'net_margin': '{:.2f}%',       # ★
-                        'eps': '{:.2f}',
+                        'operating_margin': '{:.2f}%', 
+                        'pretax_margin': '{:.2f}%',    
+                        'net_margin': '{:.2f}%',     
+                        'consolidation_days': '{:.0f}天',
                         'capital': '{:.1f}億',
+                        'eps': '{:.2f}'
                     })
-                    .background_gradient(subset=['vol_spike'], cmap='Reds', vmin=1, vmax=5)
+
+                    .background_gradient(subset=['vol_spike'], cmap='Reds', vmin=0, vmax=5)
                     .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
                     .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
                     .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
-                    .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50),
+                    .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50)
+                    .background_gradient(subset=['consolidation_days'], cmap='Blues', vmin=0, vmax=200),
                     
                     column_config={
                         "stock_id": "代號", "name": "名稱", "industry": "產業",
-                        "close": "股價", 
-                        "vol_spike": "爆量倍數", "position": "位階", "consolidation_days": "盤整(天)", "beta": "波動",
+                        "close": "股價", "change_pct": "漲跌", 
+                        "vol_spike": "爆量倍數", "position": "位階", "beta": "波動",
                         "revenue_growth": "營收成長", "eps_growth": "EPS成長", "revenue_streak": "連增年數",
                         "pe_ratio": "本益比", "pb_ratio": "股淨比", "yield_rate": "殖利率", 
-                        "capital": "股本",
-                        "eps": "EPS",
+                        "capital": "股本", "eps": "EPS",
                         "gross_margin": "毛利%",
-                        "operating_margin": "營益%",  # ★ 簡稱
-                        "pretax_margin": "稅前%",    # ★
-                        "net_margin": "稅後%"       # ★
+                        "operating_margin": "營益%", 
+                        "pretax_margin": "稅前%", 
+                        "net_margin": "稅後%", 
+                        "consolidation_days": "盤整(天)"
                     },
-                    # ★★★ 最終顯示順序 (移除均量與漲跌) ★★★
+                    # ★★★ 最終顯示順序：移除均量，加入三率 ★★★
                     column_order=[
-                        "stock_id", "name", "industry", 
+                        "stock_id", "name", "industry",
                         "close", "vol_spike",
-                        "position", "revenue_growth", "eps_growth", "revenue_streak",
+                        "position", "consolidation_days", "revenue_growth", "eps_growth", "revenue_streak",
                         "pe_ratio", "yield_rate", 
                         "gross_margin", "operating_margin", "pretax_margin", "net_margin", # ★ 三率排排站
                         "capital", "eps"
                     ],
-                    width="stretch", height=600, on_select="rerun", selection_mode="single-row", hide_index=True
+                    width='stretch',
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row"
                 )
 
+                # 處理選取邏輯
                 if len(event.selection.rows) > 0:
                     selected_row_index = event.selection.rows[0]
                     selected_stock_id = df_result.iloc[selected_row_index]['stock_id']
+                    st.session_state.current_stock_row = df_result.iloc[selected_row_index]
                 else:
-                    selected_stock_id = df_result.iloc[0]['stock_id']
+                    selected_stock_id = None
+                    if 'current_stock_row' in st.session_state:
+                        del st.session_state.current_stock_row
+            
+            with col_detail:
+                # ★★★ 右側詳情卡片 (維持卡片式設計) ★★★
+                if selected_stock_id:
+                    row = df_result[df_result['stock_id'] == selected_stock_id].iloc[0]
                     
-            else:
-                st.warning("無符合條件股票")
-                selected_stock_id = None
-
-        with col_detail:
-            if selected_stock_id:
-                # 取得該股票詳細資料
-                row = df_result[df_result['stock_id'] == selected_stock_id].iloc[0]
-                
-                st.subheader(f"📊 {row['stock_id']} {row['name']} 個股儀表板")
-                
-                # 1. 關鍵指標卡片 (Metrics)
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("股價", f"{row['close']:.2f}", f"{row['change_pct']:+.2f}%")
-                
-                # 顯示營收連增與成長率
-                streak_text = f"連增{row['revenue_streak']}年" if row['revenue_streak'] > 0 else "無連增"
-                m2.metric("營收表現", f"{row['revenue_growth']:+.1f}%", streak_text)
-                
-                # 顯示位階 (根據目前選擇的週期)
-                pos_label = f"位階 ({period_val.upper()})"
-                m3.metric(pos_label, f"{row['position']:.2f}", help="0=低點, 1=高點")
-                
-                # 顯示股本
-                m4.metric("股本", f"{row['capital']:.1f} 億" if pd.notna(row['capital']) else "N/A")
-
-                # 2. 基本面資訊區
-                with st.container():
-                    st.info(f"📌 **基本面概況**：產業別 [{row['industry']}] | EPS [{row['eps']}] | Beta [{row['beta']}]")
-                
-                # 3. K 線圖                
-                hist = load_stock_history(selected_stock_id)
-                
-                if not hist.empty:
-                    # 轉數字
-                    for c in ['open', 'high', 'low', 'close', 'ma_5', 'ma_20', 'volume']:
-                        hist[c] = pd.to_numeric(hist[c], errors='coerce')
-                    
-                    chart_type = st.radio("K 線週期", ["日線", "週線"], horizontal=True, key='chart_period')
-
-                    # [修改點] 根據按鈕決定資料
-                    if chart_type == "週線":
-                        plot_data = resample_to_weekly(hist)
-                    else:
-                        plot_data = hist
+                    with st.container(border=True):
+                        # 1. 標題區
+                        st.markdown(f"### 📊 {row['name']} ({row['stock_id']})")
+                        st.caption(f"產業：{row['industry']} | 股本：{row['capital']:.1f}億 | Beta：{row['beta']:.2f}")
                         
-                    # 傳入 chart_type 給標題用
-                    fig = plot_candlestick(plot_data, selected_stock_id, row['name'], chart_type)
-                    st.plotly_chart(
-                        fig, 
-                        width="stretch", 
-                        config={
-                            'scrollZoom': True,        # 開啟滑鼠滾輪縮放
-                            'displayModeBar': True,    # 顯示右上角工具列
-                            'displaylogo': False       # 隱藏 plotly logo
-                        }
-                    )
+                        st.divider()
+
+                        # 2. 關鍵指標
+                        k1, k2, k3, k4 = st.columns(4)
+                        k1.metric("股價", f"{row['close']:.2f}", f"{row['change_pct']:+.2f}%")
+                        k2.metric("爆量倍數", f"{row['vol_spike']:.1f} x", delta_color="off")
+                        
+                        current_period_val = st.session_state.get('period_val', '1y') 
+                        k3.metric(f"位階 ({current_period_val})", f"{row['position']:.2f}")
+                        
+                        streak_icon = "🔥" if row['revenue_streak'] >= 3 else ""
+                        k4.metric("營收 YoY", f"{row['revenue_growth']:+.1f}%", f"{streak_icon} 連增{row['revenue_streak']}年")
+
+                        # 3. 籌碼與獲利小表格
+                        st.markdown(
+                            f"""
+                            | 本益比 (PE) | 股淨比 (PB) | 殖利率 | EPS (近四季) | 毛利率 |
+                            | :---: | :---: | :---: | :---: | :---: |
+                            | **{row['pe_ratio']:.1f}** | **{row['pb_ratio']:.2f}** | **{row['yield_rate']:.2f}%** | **{row['eps']:.2f}** | **{row['gross_margin']:.1f}%** |
+                            """
+                        )
+
+                        # 4. K 線圖
+                        st.write("") 
+                        hist = load_stock_history(selected_stock_id)
+                        
+                        if not hist.empty:
+                            for c in ['open', 'high', 'low', 'close', 'ma_5', 'ma_20', 'volume']:
+                                hist[c] = pd.to_numeric(hist[c], errors='coerce')
+                            
+                            c_chart, c_blank = st.columns([1, 3])
+                            with c_chart:
+                                chart_type = st.radio("週期", ["日線", "週線"], horizontal=True, label_visibility="collapsed", key='chart_period_screener')
+
+                            if chart_type == "週線":
+                                plot_data = resample_to_weekly(hist)
+                            else:
+                                plot_data = hist
+                                
+                            fig = plot_candlestick(plot_data, selected_stock_id, row['name'], chart_type)
+                            
+                            # ★★★ 關鍵修正：config 設定 ★★★
+                            st.plotly_chart(
+                                fig, 
+                                use_container_width=True, 
+                                config={
+                                    'scrollZoom': True,        # 1. ★★★ 開啟滑鼠滾輪縮放 (最重要) ★★★
+                                    'displayModeBar': True,    # 2. 顯示右上角工具列 (因為縮放後你可能需要按「重置」)
+                                    'displaylogo': False,      # 3. 隱藏 Plotly logo 比較乾淨
+                                    'modeBarButtonsToRemove': ['select2d', 'lasso2d'] # 4. 移除用不到的選取工具
+                                })
+                        else:
+                            st.warning("無歷史股價資料")
+
                 else:
-                    st.warning("無歷史股價資料")
-            else:
-                st.info("👈 請從左側清單選擇一檔股票查看詳情")
+                    # 空狀態
+                    with st.container(border=True):
+                        st.info("👈 請從左側清單點擊一檔股票，這裡將顯示詳細分析儀表板。")
+        else:
+            st.warning("⚠️ 目前條件查無符合股票，請放寬篩選標準。")
 
     # ==========================================
     # 頁面 2: AI 相似股搜尋 (Similarity)
     # ==========================================
-    elif selected_page == "AI 相似股 (Similarity)":
+    elif st.session_state.current_main_page == "AI 相似股 (Similarity)":
         st.title("🧬 AI 潛力股 DNA 比對")
         
-        col_left, col_right = st.columns([1, 2])
-        
-        with col_left:
-            st.info("輸入一檔目標股票，AI 將根據您設定的因子權重，找出全台股中最像的標的。")
+        # 使用 container 稍微隔開標題
+        with st.container():
+            col_left, col_right = st.columns([1, 2])
             
-            all_stocks_list = get_all_stocks_list()
-            default_idx = 0
-            for i, s in enumerate(all_stocks_list):
-                if "2330" in s: default_idx = i; break
-            def reset_ai_state():
-                st.session_state.ai_triggered = False
+            # --- 左側：設定區 ---
+            with col_left:
+                with st.container(border=True): # 讓左側設定區也有個框框，比較好看
+                    st.info("💡 輸入一檔目標股票，AI 將根據您設定的因子權重，找出全台股中最像的標的。")
+                    
+                    all_stocks_list = get_all_stocks_list()
+                    default_idx = 0
+                    for i, s in enumerate(all_stocks_list):
+                        if "2330" in s: default_idx = i; break
+                    
+                    def reset_ai_state():
+                        st.session_state.ai_triggered = False
 
-            selected_stock_str = st.selectbox("🔍 DNA 來源 (目標股票)", all_stocks_list, index=default_idx, on_change = reset_ai_state) # ★ 當換股票時，重置分析狀態
-            target_id = selected_stock_str.split()[0] if selected_stock_str else "2330"
+                    selected_stock_str = st.selectbox("🔍 DNA 來源 (目標股票)", all_stocks_list, index=default_idx, on_change=reset_ai_state) 
+                    target_id = selected_stock_str.split()[0] if selected_stock_str else "2330"
 
-            col_opt1, col_opt2 = st.columns(2)
-            with col_opt1:
-                period_mode = st.radio("位階基準", ["近 1 年", "近 2 年"], horizontal=True)
-                period_val = '2y' if "2" in period_mode else '1y'
-            with col_opt2:
-                st.write("") # 排版用空格
-                st.write("") 
-                lock_industry = st.checkbox("🔒 僅限同產業", value=False, help="勾選後，只會從相同產業中尋找相似股")
+                    col_opt1, col_opt2 = st.columns(2)
+                    with col_opt1:
+                        period_mode = st.radio("位階基準", ["近 1 年", "近 2 年"], horizontal=True)
+                        period_val = '2y' if "2" in period_mode else '1y'
+                    with col_opt2:
+                        st.write("") 
+                        st.write("") 
+                        lock_industry = st.checkbox("🔒 僅限同產業", value=False, help="勾選後，只會從相同產業中尋找相似股")
 
-            st.markdown("---")
-        
-            
-            st.write("⚖️ **因子權重設定 (0=不考慮, 5=最重要)**")
-            
-            with st.expander("1️⃣ 基本面 (體質)", expanded=True):
-                w_pe = st.slider("本益比 (PE)", 0, 5, 3, help="公式：股價 / EPS")
-                w_yield = st.slider("殖利率 (Yield)", 0, 5, 3, help="公式：現金股利 / 股價")
-                w_gross = st.slider("毛利率 (Gross)", 0, 5, 3, help="公式：(營收 - 成本) / 營收") # ★ 新增這行
-                w_operating = st.slider("營業利益率 (Operating)", 0, 5, 3, help="公式：營業利益 / 營收")
-                w_net = st.slider("稅後淨利率 (Net)", 0, 5, 3, help="公式：稅後淨利 / 營收")
-                w_revenue = st.slider("營收成長 (YoY)", 0, 5, 3, help="公式：(本季營收 - 去年同季) / 去年同季")
-                w_streak = st.slider("營收連增 (Streak)", 0, 5, 3, help="定義：年度營收連續成長年數")
-                w_eps = st.slider("每股盈餘 (EPS)", 0, 5, 3, help="定義：Trailing 12-Month EPS")
-                w_pb = st.slider("股價淨值比 (PB)", 0, 5, 3, help="公式：股價 / 每股淨值")
-                w_capital = st.slider("股本規模 (Capital)", 0, 5, 3, help="公式：股數 × 10 / 1億 (單位：億)")
-            
-            with st.expander("2️⃣ 技術與籌碼 (趨勢)", expanded=True):
-                w_trend = st.slider("K線走勢相似度 (Correlation)", 0, 5, 3, help="比較過去 60 天的股價走勢圖形狀。權重越高，找出來的股票線型會越像目標股")
-                w_position = st.slider(f"位階高低 ({period_val.upper()})", 0, 5, 3, help="公式：(股價 - 期間低點) / (期間高點 - 期間低點)")
-                w_consolidation = st.slider("盤整天數 (Consolidation)", 0, 5, 3, help="權重越高，越傾向尋找打底時間長度相近的股票 (例如都打底半年的)")
-                w_vol5 = st.slider("5日均量 (週量)", 0, 5, 3, help="定義：過去 5 日成交量平均")
-                w_vol20 = st.slider("20日均量 (月量)", 0, 5, 3, help="定義：過去 20 日成交量平均")
-                w_bias20 = st.slider("月線乖離 (Bias 20)", 0, 5, 3, help="公式：(股價 - 20MA) / 20MA")
-                w_bias60 = st.slider("季線乖離 (Bias 60)", 0, 5, 3, help="公式：(股價 - 60MA) / 60MA")
-                w_beta = st.slider("波動度 (Beta)", 0, 5, 3, help="定義：相對於大盤的波動係數")
-                w_change = st.slider("今日漲跌", 0, 5, 3, help="公式：(今收 - 昨收) / 昨收")  
+                    st.markdown("---")
+                
+                    st.write("⚖️ **因子權重設定 (0=不考慮, 5=最重要)**")
+                    
+                    with st.expander("1️⃣ 基本面 (體質)", expanded=True):
+                        w_pe = st.slider("本益比 (PE)", 0, 5, 3, help="公式：股價 / EPS")
+                        w_yield = st.slider("殖利率 (Yield)", 0, 5, 3, help="公式：現金股利 / 股價")
+                        w_gross = st.slider("毛利率 (Gross)", 0, 5, 3, help="公式：(營收 - 成本) / 營收")
+                        w_operating = st.slider("營業利益率 (Operating)", 0, 5, 3, help="公式：營業利益 / 營收")
+                        w_net = st.slider("稅後淨利率 (Net)", 0, 5, 3, help="公式：稅後淨利 / 營收")
+                        w_revenue = st.slider("營收成長 (YoY)", 0, 5, 3, help="公式：(本季營收 - 去年同季) / 去年同季")
+                        w_streak = st.slider("營收連增 (Streak)", 0, 5, 3, help="定義：年度營收連續成長年數")
+                        w_eps = st.slider("每股盈餘 (EPS)", 0, 5, 3, help="定義：Trailing 12-Month EPS")
+                        w_pb = st.slider("股價淨值比 (PB)", 0, 5, 3, help="公式：股價 / 每股淨值")
+                        w_capital = st.slider("股本規模 (Capital)", 0, 5, 3, help="公式：股數 × 10 / 1億 (單位：億)")
+                    
+                    with st.expander("2️⃣ 技術與籌碼 (趨勢)", expanded=True):
+                        w_trend = st.slider("K線走勢相似度 (Correlation)", 0, 5, 3, help="比較過去 60 天的股價走勢圖形狀。權重越高，找出來的股票線型會越像目標股")
+                        w_position = st.slider(f"位階高低 ({period_val.upper()})", 0, 5, 3, help="公式：(股價 - 期間低點) / (期間高點 - 期間低點)")
+                        w_consolidation = st.slider("盤整天數 (Consolidation)", 0, 5, 3, help="權重越高，越傾向尋找打底時間長度相近的股票 (例如都打底半年的)")
+                        w_vol5 = st.slider("5日均量 (週量)", 0, 5, 3, help="定義：過去 5 日成交量平均")
+                        w_vol20 = st.slider("20日均量 (月量)", 0, 5, 3, help="定義：過去 20 日成交量平均")
+                        w_bias20 = st.slider("月線乖離 (Bias 20)", 0, 5, 3, help="公式：(股價 - 20MA) / 20MA")
+                        w_bias60 = st.slider("季線乖離 (Bias 60)", 0, 5, 3, help="公式：(股價 - 60MA) / 60MA")
+                        w_beta = st.slider("波動度 (Beta)", 0, 5, 3, help="定義：相對於大盤的波動係數")
+                        w_change = st.slider("今日漲跌", 0, 5, 3, help="公式：(今收 - 昨收) / 昨收")  
 
-            # 1. 確保 Session State 有這個變數 (用來記憶是否按過分析)
-            if 'ai_triggered' not in st.session_state:
-                st.session_state.ai_triggered = False
+                    # Session State 邏輯維持原樣
+                    if 'ai_triggered' not in st.session_state:
+                        st.session_state.ai_triggered = False
 
-            # 2. 按鈕被按下時，將狀態設為 True
-            if st.button("🚀 開始 AI 分析", type="primary", width="stretch"):
-                st.session_state.ai_triggered = True
-            
-        with col_right:
-            # 3. 改成檢查 Session State，而不是只檢查按鈕那一瞬間的狀態
-            if st.session_state.ai_triggered:
-                with st.spinner(f"正在分析... (基準: {period_val})"):
-                    try:
-                    # 1. 執行分析
-                        weights = {
-                            'pe': w_pe, 'yield': w_yield, 'gross': w_gross, 'pb': w_pb, 'eps': w_eps,
-                            'operating': w_operating,     # ★ 新增：營業利益率
-                            'net': w_net,
-                            'revenue': w_revenue, 'streak': w_streak, 'capital': w_capital,
-                            'bias20': w_bias20, 'bias60': w_bias60, 'beta': w_beta, 'change': w_change, 
-                            'position': w_position, 'vol5': w_vol5, 'vol20': w_vol20, 'trend': w_trend, 'consolidation': w_consolidation,
-                        }
+                    if st.button("🚀 開始 AI 分析", type="primary", use_container_width=True):
+                        st.session_state.ai_triggered = True
+                
+            # --- 右側：結果展示區 ---
+            with col_right:
+                if st.session_state.ai_triggered:
+                    with st.spinner(f"正在分析... (基準: {period_val})"):
+                        try:
+                            # 1. 執行分析 (邏輯完全不變)
+                            weights = {
+                                'pe': w_pe, 'yield': w_yield, 'gross': w_gross, 'pb': w_pb, 'eps': w_eps,
+                                'operating': w_operating, 'net': w_net,
+                                'revenue': w_revenue, 'streak': w_streak, 'capital': w_capital,
+                                'bias20': w_bias20, 'bias60': w_bias60, 'beta': w_beta, 'change': w_change, 
+                                'position': w_position, 'vol5': w_vol5, 'vol20': w_vol20, 'trend': w_trend, 'consolidation': w_consolidation,
+                            }
 
-                        similar_stocks, error = analysis.find_similar_stocks(
-                            target_id, weights, period=period_val, industry_only=lock_industry
-                        )
-                        
-                        if error:
-                            st.error(error)
-                        else:
-                            st.success(f"✅ 找到與 {target_id} 最像的股票！")
-                            
-                            sim_show = similar_stocks.copy()
-
-                            # --- ★★★ 新增這段：將股數換算成張數 (除以 1000) ★★★ ---
-                            # 1. 先計算「爆量倍數」 (這時候 volume 和 vol_ma_20 都是「股數」，相除才正確)
-                            sim_show['vol_spike'] = sim_show.apply(
-                                lambda x: x['volume'] / x['vol_ma_20'] if pd.notna(x['vol_ma_20']) and x['vol_ma_20'] > 0 else 0, 
-                                axis=1
-                            )
-
-                            # 2. 計算完後，再把均量換算成「張數」 (除以 1000) 顯示用
-                            sim_show['vol_ma_5'] = pd.to_numeric(sim_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
-                            sim_show['vol_ma_20'] = pd.to_numeric(sim_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
-
-                            # 2. 補齊欄位 (加入週/月均量)
-                            all_cols = [
-                                'stock_id', 'name', 'industry', 'similarity',
-                                'close', 'change_pct', 'vol_spike', 'position', 'beta',
-                                'revenue_growth', 'eps_growth', 'revenue_streak',
-                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
-                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', # ★ 加入三率
-                                'consolidation_days', 'capital'
-                            ]
-                            
-                            # 防呆：確保欄位存在
-                            for c in all_cols:
-                                if c not in sim_show.columns: sim_show[c] = 0
-
-                            # 4. 強制轉數字
-                            numeric_cols = [
-                                'similarity', 'close', 'change_pct', 'vol_spike', 'position', 'beta',
-                                'revenue_growth', 'eps_growth', 'revenue_streak',
-                                'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital',
-                                'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 'consolidation_days', # ★ 加入三率
-                            ]
-                            for c in numeric_cols:
-                                sim_show[c] = pd.to_numeric(sim_show[c], errors='coerce').fillna(0)
-
-                            # 5. 表格顯示設定 (同步篩選頁面的風格)
-                            event = st.dataframe(
-                                sim_show.style.format({
-                                    'similarity': '{:.1f}%',
-                                    'close': '{:.2f}', 
-                                    'change_pct': '{:+.2f}%',
-                                    'vol_spike': '{:.1f}倍', 
-                                    'position': '{:.2f}', 
-                                    'beta': '{:.2f}',
-                                    'revenue_growth': '{:+.2f}%', 
-                                    'eps_growth': '{:+.2f}%', 
-                                    'revenue_streak': '{:.0f}年',
-                                    'pe_ratio': '{:.1f}', 
-                                    'pb_ratio': '{:.2f}',
-                                    'yield_rate': '{:.2f}%', 
-                                    'gross_margin': '{:.2f}%',
-                                    'operating_margin': '{:.2f}%', 
-                                    'pretax_margin': '{:.2f}%',    
-                                    'net_margin': '{:.2f}%',     
-                                    'consolidation_days': '{:.0f}天',
-                                    'capital': '{:.1f}億',
-                                    'eps': '{:.2f}'
-                                })
-                                .background_gradient(subset=['similarity'], cmap='Greens')
-                                .background_gradient(subset=['vol_spike'], cmap='Reds', vmin=1, vmax=5)
-                                .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
-                                .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
-                                .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
-                                .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50)
-                                .background_gradient(subset=['consolidation_days'], cmap='Blues', vmin=0, vmax=200),
-                                
-                                column_config={
-                                    "stock_id": "代號", "name": "名稱", "industry": "產業", "similarity": "相似度",
-                                    "close": "股價", "change_pct": "漲跌", 
-                                    "vol_spike": "爆量倍數", "position": "位階", "beta": "波動",
-                                    "revenue_growth": "營收成長", "eps_growth": "EPS成長", "revenue_streak": "連增年數",
-                                    "pe_ratio": "本益比", "pb_ratio": "股淨比", "yield_rate": "殖利率", 
-                                    "capital": "股本", "eps": "EPS",
-                                    "gross_margin": "毛利%",
-                                    "operating_margin": "營益%", # ★
-                                    "pretax_margin": "稅前%",   # ★
-                                    "net_margin": "稅後%",       # ★
-                                    "consolidation_days": "盤整(天)"
-                                },
-                                # ★★★ 最終顯示順序：移除均量，加入三率 ★★★
-                                column_order=[
-                                    "stock_id", "name", "similarity", "industry",
-                                    "close", "vol_spike",
-                                    "position", "consolidation_days", "revenue_growth", "eps_growth", "revenue_streak",
-                                    "pe_ratio", "yield_rate", 
-                                    "gross_margin", "operating_margin", "pretax_margin", "net_margin", # ★ 三率排排站
-                                    "capital", "eps"
-                                ],
-                                width='stretch',
-                                hide_index=True,
-                                on_select="rerun",
-                                selection_mode="single-row"
+                            similar_stocks, error = analysis.find_similar_stocks(
+                                target_id, weights, period=period_val, industry_only=lock_industry
                             )
                             
-                            
-                            st.markdown("---")
-                            
-                            # ★★★ 修改 2：決定要顯示哪一檔股票 (預設第二名，或使用者點選的那檔) ★★★
-                            target_stock = None
-                            
-                            # 情況 A: 使用者有點選表格
-                            if len(event.selection.rows) > 0:
-                                selected_idx = event.selection.rows[0]
-                                target_stock = similar_stocks.iloc[selected_idx]
-                            
-                            # 情況 B: 使用者沒點選，預設顯示「最像的那檔 (排除自己)」
-                            # 邏輯：原本的第一名 (iloc[0]) 是本尊，所以我們抓第二名 (iloc[1])
-                            elif len(similar_stocks) > 1:
-                                target_stock = similar_stocks.iloc[1] 
-                            
-                            # 情況 C: 如果真的只找到自己 (例如產業內只有一檔)，那就只好顯示自己
+                            if error:
+                                st.error(error)
                             else:
-                                target_stock = similar_stocks.iloc[0]
+                                st.success(f"✅ 找到與 {target_id} 最像的股票！")
+                                
+                                sim_show = similar_stocks.copy()
 
-                            # --- 顯示詳細資料與 K 線圖 ---
-                            if target_stock is not None:
-                                st.subheader(f"📊 {target_stock['name']} ({target_stock['stock_id']}) - 相似度 {target_stock['similarity']:.1f}%")
-                                
-                                m1, m2, m3, m4, m5 = st.columns(5)
-                                m1.metric("收盤價", f"{target_stock['close']:.2f}")
-                                m2.metric(f"位階 ({period_val})", f"{target_stock['position']:.2f}")
-                                
-                                streak_txt = f"連增{target_stock['revenue_streak']}年" if target_stock['revenue_streak'] > 0 else "無"
-                                m3.metric("營收表現", f"{target_stock['revenue_growth']:+.1f}%", streak_txt)
-                                
-                                m4.metric("股本", f"{target_stock['capital']:.1f} 億")
+                                # 計算邏輯完全保留
+                                sim_show['vol_spike'] = sim_show.apply(
+                                    lambda x: x['volume'] / x['vol_ma_20'] if pd.notna(x['vol_ma_20']) and x['vol_ma_20'] > 0 else 0, 
+                                    axis=1
+                                )
+                                sim_show['vol_ma_5'] = pd.to_numeric(sim_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
+                                sim_show['vol_ma_20'] = pd.to_numeric(sim_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
 
-                                vol_20_lots = target_stock['vol_ma_20'] / 1000 if pd.notna(target_stock['vol_ma_20']) else 0
-                                m5.metric("月均量", f"{int(target_stock['vol_ma_20'])} 張" if pd.notna(target_stock['vol_ma_20']) else "N/A")
-                                
-                                # ★★★ 修改 3：加上 K 線週期切換按鈕 (跟條件篩選頁面一樣) ★★★
-                                chart_type_ai = st.radio("K 線週期", ["日線", "週線"], horizontal=True, key='chart_period_ai')
+                                # 補齊欄位
+                                all_cols = [
+                                    'stock_id', 'name', 'industry', 'similarity',
+                                    'close', 'change_pct', 'vol_spike', 'position', 'beta',
+                                    'revenue_growth', 'eps_growth', 'revenue_streak',
+                                    'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 
+                                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin',
+                                    'consolidation_days', 'capital'
+                                ]
+                                for c in all_cols:
+                                    if c not in sim_show.columns: sim_show[c] = 0
 
-                                # 載入歷史資料
-                                hist = load_stock_history(target_stock['stock_id'])
-                                
-                                if not hist.empty:
-                                    for c in ['open', 'high', 'low', 'close', 'ma_5', 'ma_20', 'volume']:
-                                        hist[c] = pd.to_numeric(hist[c], errors='coerce')
+                                # 強制轉數字
+                                numeric_cols = [
+                                    'similarity', 'close', 'change_pct', 'vol_spike', 'position', 'beta',
+                                    'revenue_growth', 'eps_growth', 'revenue_streak',
+                                    'pe_ratio', 'pb_ratio', 'yield_rate', 'eps', 'capital',
+                                    'gross_margin', 'operating_margin', 'pretax_margin', 'net_margin', 'consolidation_days',
+                                ]
+                                for c in numeric_cols:
+                                    sim_show[c] = pd.to_numeric(sim_show[c], errors='coerce').fillna(0)
+
+                                # 表格顯示
+                                event = st.dataframe(
+                                    sim_show.style.format({
+                                        'similarity': '{:.1f}%',
+                                        'close': '{:.2f}', 
+                                        'change_pct': '{:+.2f}%',
+                                        'vol_spike': '{:.1f}倍', 
+                                        'position': '{:.2f}', 
+                                        'beta': '{:.2f}',
+                                        'revenue_growth': '{:+.2f}%', 
+                                        'eps_growth': '{:+.2f}%', 
+                                        'revenue_streak': '{:.0f}年',
+                                        'pe_ratio': '{:.1f}', 
+                                        'pb_ratio': '{:.2f}',
+                                        'yield_rate': '{:.2f}%', 
+                                        'gross_margin': '{:.2f}%',
+                                        'operating_margin': '{:.2f}%', 
+                                        'pretax_margin': '{:.2f}%',    
+                                        'net_margin': '{:.2f}%',     
+                                        'consolidation_days': '{:.0f}天',
+                                        'capital': '{:.1f}億',
+                                        'eps': '{:.2f}'
+                                    })
+                                    .background_gradient(subset=['similarity'], cmap='Greens')
+                                    .background_gradient(subset=['vol_spike'], cmap='Reds', vmin=0, vmax=5)
+                                    .background_gradient(subset=['revenue_growth', 'eps_growth'], cmap='Greens', vmin=0, vmax=50)
+                                    .background_gradient(subset=['position'], cmap='Blues', vmin=0, vmax=1)
+                                    .background_gradient(subset=['revenue_streak'], cmap='Purples', vmin=0, vmax=5)
+                                    .background_gradient(subset=['gross_margin', 'operating_margin', 'pretax_margin', 'net_margin'], cmap='Oranges', vmin=0, vmax=50)
+                                    .background_gradient(subset=['consolidation_days'], cmap='Blues', vmin=0, vmax=200),
                                     
-                                    # 根據按鈕決定資料
-                                    if chart_type_ai == "週線":
-                                        plot_data = resample_to_weekly(hist)
-                                    else:
-                                        plot_data = hist
-                                    
-                                    # 繪圖
-                                    fig = plot_candlestick(plot_data, target_stock['stock_id'], target_stock['name'], chart_type_ai)
-                                    st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})
+                                    column_config={
+                                        "stock_id": "代號", "name": "名稱", "industry": "產業", "similarity": "相似度",
+                                        "close": "股價", "change_pct": "漲跌", 
+                                        "vol_spike": "爆量倍數", "position": "位階", "beta": "波動",
+                                        "revenue_growth": "營收成長", "eps_growth": "EPS成長", "revenue_streak": "連增年數",
+                                        "pe_ratio": "本益比", "pb_ratio": "股淨比", "yield_rate": "殖利率", 
+                                        "capital": "股本", "eps": "EPS",
+                                        "gross_margin": "毛利%",
+                                        "operating_margin": "營益%", 
+                                        "pretax_margin": "稅前%", 
+                                        "net_margin": "稅後%", 
+                                        "consolidation_days": "盤整(天)"
+                                    },
+                                    column_order=[
+                                        "stock_id", "name", "similarity", "industry",
+                                        "close", "vol_spike",
+                                        "position", "consolidation_days", "revenue_growth", "eps_growth", "revenue_streak",
+                                        "pe_ratio", "yield_rate", 
+                                        "gross_margin", "operating_margin", "pretax_margin", "net_margin",
+                                        "capital", "eps"
+                                    ],
+                                    use_container_width=True, # 修正寬度
+                                    hide_index=True,
+                                    on_select="rerun",
+                                    selection_mode="single-row"
+                                )
+                                
+                                st.write("") # 空行分隔
+
+                                # 決定顯示哪一檔股票
+                                target_stock = None
+                                if len(event.selection.rows) > 0:
+                                    # 情況 A: 使用者有點選表格 -> 顯示選中的
+                                    selected_idx = event.selection.rows[0]
+                                    target_stock = similar_stocks.iloc[selected_idx]
+                                elif len(similar_stocks) > 1:
+                                    # 情況 B: 沒選，預設顯示第 2 名 (因為第 1 名通常是自己)
+                                    target_stock = similar_stocks.iloc[1] 
                                 else:
-                                    st.warning(f"⚠️ 找不到 {target_stock['stock_id']} 的歷史股價資料")
-                    except Exception as e:
-                        st.error(f"分析錯誤: {e}")
+                                    # 情況 C: 只有 1 檔，顯示自己
+                                    target_stock = similar_stocks.iloc[0]
+
+                                # ★★★ 關鍵修復：同步存入 Session State 讓 AI 知道 ★★★
+                                if target_stock is not None:
+                                    st.session_state.current_stock_row = target_stock
+
+                                # --- ★★★ UI 優化區：卡片式儀表板 ★★★ ---
+                                if target_stock is not None:
+                                    
+                                    # 使用 container(border=True) 創造卡片效果，跟 Page 1 一樣
+                                    with st.container(border=True):
+                                        # 1. 標題與基本資料
+                                        st.markdown(f"### 📊 {target_stock['name']} ({target_stock['stock_id']})")
+                                        st.caption(f"相似度：**{target_stock['similarity']:.1f}%** | 產業：{target_stock['industry']} | 股本：{target_stock['capital']:.1f}億")
+                                        
+                                        st.divider()
+
+                                        # 2. 關鍵指標 (排版對齊)
+                                        m1, m2, m3, m4, m5 = st.columns(5)
+                                        m1.metric("收盤價", f"{target_stock['close']:.2f}", f"{target_stock['change_pct']:+.2f}%")
+                                        m2.metric(f"位階 ({period_val})", f"{target_stock['position']:.2f}")
+                                        
+                                        streak_txt = f"🔥 連增{target_stock['revenue_streak']}年" if target_stock['revenue_streak'] >= 3 else (f"連增{target_stock['revenue_streak']}年" if target_stock['revenue_streak'] > 0 else "無連增")
+                                        m3.metric("營收成長", f"{target_stock['revenue_growth']:+.1f}%", streak_txt)
+                                        
+                                        # 計算均量 (張數)
+                                        vol_20_lots = int(target_stock['vol_ma_20'] / 1000) if pd.notna(target_stock['vol_ma_20']) else 0
+                                        m4.metric("月均量", f"{vol_20_lots} 張")
+                                        
+                                        # 本益比
+                                        m5.metric("本益比", f"{target_stock['pe_ratio']:.1f}" if target_stock['pe_ratio'] > 0 else "N/A")
+
+                                        st.write("") # 空行
+
+                                        # 3. K 線圖區塊
+                                        chart_type_ai = st.radio("K 線週期", ["日線", "週線"], horizontal=True, key='chart_period_ai', label_visibility="collapsed")
+
+                                        hist = load_stock_history(target_stock['stock_id'])
+                                        
+                                        if not hist.empty:
+                                            for c in ['open', 'high', 'low', 'close', 'ma_5', 'ma_20', 'volume']:
+                                                hist[c] = pd.to_numeric(hist[c], errors='coerce')
+                                            
+                                            if chart_type_ai == "週線":
+                                                plot_data = resample_to_weekly(hist)
+                                            else:
+                                                plot_data = hist
+                                            
+                                            # 繪圖
+                                            fig = plot_candlestick(plot_data, target_stock['stock_id'], target_stock['name'], chart_type_ai)
+                                            
+                                            # ★★★ 關鍵修正：套用跟 Page 1 完全一樣的 Chart Config ★★★
+                                            st.plotly_chart(
+                                                fig, 
+                                                use_container_width=True, 
+                                                config={
+                                                    'scrollZoom': True,        # 開啟滾輪縮放
+                                                    'displayModeBar': True,    # 顯示工具列
+                                                    'displaylogo': False,      # 隱藏 logo
+                                                    'modeBarButtonsToRemove': ['select2d', 'lasso2d']
+                                                }
+                                            )
+                                        else:
+                                            st.warning(f"⚠️ 找不到 {target_stock['stock_id']} 的歷史股價資料")
+                        except Exception as e:
+                            st.error(f"分析錯誤: {e}")
+
 
     # ==========================================
     # 頁面 3: 系統設定 (UI 更新版)
     # ==========================================
-    # elif selected_page == "系統設定":
+    # elif st.session_state.current_main_page == "系統設定":
     #     st.title("⚙️ 系統維護")
         
     #     st.info("💡 智慧增量更新：系統會自動檢查每檔股票的最後日期，只抓取缺漏的資料。若資料已是最新，會自動跳過。")
