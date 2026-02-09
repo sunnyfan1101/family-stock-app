@@ -605,7 +605,8 @@ def main():
                                 "beta": st.session_state.sel_beta,
                                 "eps": st.session_state.sel_eps,
                                 "gross": st.session_state.sel_gross,
-                                "consolidation": st.session_state.sel_consolidation
+                                "consolidation": st.session_state.sel_consolidation,
+                                "eps_growth": st.session_state.sel_eps_growth
                             }
                             if save_user_preset(new_preset_name, current_settings):
                                 st.success(f"已儲存：{new_preset_name}")
@@ -649,6 +650,7 @@ def main():
                         if "change" in strat_params: st.session_state['sel_change'] = strat_params["change"]
                         if "price" in strat_params: st.session_state['sel_price'] = strat_params["price"]
                         if "consolidation" in strat_params: st.session_state['sel_consolidation'] = strat_params["consolidation"]
+                        if "eps_growth" in strat_params: st.session_state['sel_eps_growth'] = strat_params["eps_growth"]
                         st.rerun()
 
                 # 5. 重置與刪除 (這部分保持原樣)
@@ -820,7 +822,7 @@ def main():
 
         # --- 初始化 Session State ---
         filter_keys = ['sel_industry', 'sel_price', 'sel_capital', 'sel_pos', 'sel_vol5', 'sel_vol20', 'sel_change', 
-                       'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross', 'sel_consolidation']
+                       'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross', 'sel_consolidation', 'sel_eps_growth']
         
         for k in filter_keys:
             if k not in st.session_state:
