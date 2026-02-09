@@ -367,7 +367,7 @@ def get_eps_range(option):
     return mapping.get(option, (None, None))
 
 def get_price_range(option):
-    mapping = {"不拘": (None, None), "100 元以上 (高價)": (100, None), "50 ~ 100 元 (中價)": (50, 100), "10 ~ 50 元 (銅板)": (10, 50), "10 元以下 (低價)": (0, 10)}
+    mapping = {"不拘": (None, None), "100 元以上": (100, None), "30 ~ 100 元": (30, 100), "30 元以下": (0, 30)}
     return mapping.get(option, (None, None))
 
 def get_change_range(option):
@@ -461,12 +461,11 @@ def get_consolidation_range(option):
     # 盤整天數
     mapping = {
         "不拘": None,
-        "盤整 1 個月以上 (> 20天)": 20,
-        "盤整 3 個月以上 (> 60天)": 60,
-        "盤整半年以上 (> 120天)": 120,
-        "長期打底 (> 200天)": 200,
-        "大箱型 3 個月 (> 60天, ±20%)": (60, 0.2),  # ★ 新增
-        "大箱型半年 (> 120天, ±20%)": (120, 0.2)   # ★ 新增
+        "盤整 1 個月 (> 20天, ±10%)": (20, 0.1),
+        "盤整 3 個月 (> 60天, ±10%)": (60, 0.1),
+        "盤整半年 (> 120天, ±10%)": (120, 0.1),
+        "大箱型 3 個月 (> 60天, ±20%)": (60, 0.2), 
+        "大箱型半年 (> 120天, ±20%)": (120, 0.2)
     }
     
     return mapping.get(option, None)
@@ -581,11 +580,11 @@ def main():
                 
                 # 初始化 filter_keys (如果之前沒定義過)
                 filter_keys = ['sel_industry', 'sel_price', 'sel_capital', 'sel_pos', 'sel_vol5', 'sel_vol20', 'sel_change', 
-                               'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross']
+                               'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross', 'sel_consolidation']
 
                 # 3. 儲存策略按鈕 (這裡只留儲存邏輯)
                 st.markdown("---")
-                with st.popover("💾 儲存目前篩選為策略", use_container_width=True):
+                with st.popover("💾 儲存目前篩選為策略", width='stretch'):
                     new_preset_name = st.text_input("策略名稱", placeholder="例如：我的存股名單", key="save_preset_input_sidebar")
                     
                     if st.button("確認儲存", type="primary", key="save_preset_btn_sidebar"):
@@ -605,7 +604,8 @@ def main():
                                 "yield": st.session_state.sel_yield,
                                 "beta": st.session_state.sel_beta,
                                 "eps": st.session_state.sel_eps,
-                                "gross": st.session_state.sel_gross
+                                "gross": st.session_state.sel_gross,
+                                "consolidation": st.session_state.sel_consolidation
                             }
                             if save_user_preset(new_preset_name, current_settings):
                                 st.success(f"已儲存：{new_preset_name}")
@@ -626,7 +626,7 @@ def main():
                 st.write("") 
                 selected_strat_name = st.selectbox("📂 載入策略", ["-- 請選擇 --"] + list(all_strategies.keys()), key="load_preset_sidebar")
                 
-                if st.button("📥 套用此策略", use_container_width=True, key="apply_preset_btn"):
+                if st.button("📥 套用此策略", width='stretch', key="apply_preset_btn"):
                     if selected_strat_name != "-- 請選擇 --":
                         strat_params = all_strategies[selected_strat_name]
                         # 重置
@@ -648,19 +648,20 @@ def main():
                         if "vol20" in strat_params: st.session_state['sel_vol20'] = strat_params["vol20"]
                         if "change" in strat_params: st.session_state['sel_change'] = strat_params["change"]
                         if "price" in strat_params: st.session_state['sel_price'] = strat_params["price"]
+                        if "consolidation" in strat_params: st.session_state['sel_consolidation'] = strat_params["consolidation"]
                         st.rerun()
 
                 # 5. 重置與刪除 (這部分保持原樣)
                 col_reset, col_del = st.columns(2)
                 with col_reset:
-                    if st.button("🔄 重置", use_container_width=True, key="reset_btn_sidebar"):
+                    if st.button("🔄 重置", width='stretch', key="reset_btn_sidebar"):
                         for k in filter_keys:
                             if k == 'sel_industry': st.session_state[k] = ["全部"]
                             else: st.session_state[k] = "不拘"
                         st.rerun()
                 
                 with col_del:
-                    with st.popover("🗑️ 刪除", use_container_width=True):
+                    with st.popover("🗑️ 刪除", width='stretch'):
                         del_name = st.selectbox("選擇刪除", list(saved_presets.keys()), key="del_preset_select")
                         if st.button("確認", key="del_preset_confirm"):
                             delete_user_preset(del_name)
@@ -819,7 +820,7 @@ def main():
 
         # --- 初始化 Session State ---
         filter_keys = ['sel_industry', 'sel_price', 'sel_capital', 'sel_pos', 'sel_vol5', 'sel_vol20', 'sel_change', 
-                       'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross']
+                       'sel_rev', 'sel_streak', 'sel_pe', 'sel_yield', 'sel_beta', 'sel_eps', 'sel_gross', 'sel_consolidation']
         
         for k in filter_keys:
             if k not in st.session_state:
@@ -851,7 +852,7 @@ def main():
             with tab1: # 基本門檻
                 c1, c2 = st.columns(2)
                 with c1:
-                    price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上 (高價)", "50 ~ 100 元 (中價)", "10 ~ 50 元 (銅板)", "10 元以下 (低價)"], key='sel_price')
+                    price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上", "30 ~ 100 元", "30 元以下"], key='sel_price')
                     capital_opt = st.selectbox("股本規模", ["不拘", "小型股 (< 10億)", "中型股 (10億 ~ 50億)", "大型股 (> 50億)", "超大型權值股 (> 200億)"], key='sel_capital')
                 with c2:
                     change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
@@ -862,7 +863,7 @@ def main():
                     # 先從 Session State 撈出來，如果沒有就預設 '1y'
                     current_period = st.session_state.get('period_val', '1y')
                     position_opt = st.selectbox(f"位階高低 ({current_period.upper()})", ["不拘", "底部 (0 ~ 0.2)", "低檔 (0.2 ~ 0.4)", "中階 (0.4 ~ 0.6)", "高檔 (0.6 ~ 0.8)", "頭部 (0.8 ~ 1.0)"], key='sel_pos')
-                    consolidation_opt = st.selectbox("盤整型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"])
+                    consolidation_opt = st.selectbox("盤整型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"], key='sel_consolidation')
                 with c2:
                     vol_ma5_opt = st.selectbox("5日均量 (週量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol5')
                     vol_ma20_opt = st.selectbox("20日均量 (月量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol20')
@@ -961,7 +962,7 @@ def main():
                     title=f"🔥 篩選結果產業熱力圖 (共 {len(df_result)} 檔)"
                 )
                 fig_map.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=350, paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_map, use_container_width=True)
+                st.plotly_chart(fig_map, width='stretch')
 
             st.write("") # 空行分隔
 
@@ -1124,7 +1125,7 @@ def main():
                             # ★★★ 關鍵修正：config 設定 ★★★
                             st.plotly_chart(
                                 fig, 
-                                use_container_width=True, 
+                                width='stretch', 
                                 config={
                                     'scrollZoom': True,        # 1. ★★★ 開啟滑鼠滾輪縮放 (最重要) ★★★
                                     'displayModeBar': True,    # 2. 顯示右上角工具列 (因為縮放後你可能需要按「重置」)
@@ -1207,7 +1208,7 @@ def main():
                     if 'ai_triggered' not in st.session_state:
                         st.session_state.ai_triggered = False
 
-                    if st.button("🚀 開始 AI 分析", type="primary", use_container_width=True):
+                    if st.button("🚀 開始 AI 分析", type="primary", width='stretch'):
                         st.session_state.ai_triggered = True
                 
             # --- 右側：結果展示區 ---
@@ -1317,7 +1318,7 @@ def main():
                                         "gross_margin", "operating_margin", "pretax_margin", "net_margin",
                                         "capital", "eps"
                                     ],
-                                    use_container_width=True, # 修正寬度
+                                    width='stretch', # 修正寬度
                                     hide_index=True,
                                     on_select="rerun",
                                     selection_mode="single-row"
@@ -1390,7 +1391,7 @@ def main():
                                             # ★★★ 關鍵修正：套用跟 Page 1 完全一樣的 Chart Config ★★★
                                             st.plotly_chart(
                                                 fig, 
-                                                use_container_width=True, 
+                                                width='stretch', 
                                                 config={
                                                     'scrollZoom': True,        # 開啟滾輪縮放
                                                     'displayModeBar': True,    # 顯示工具列
