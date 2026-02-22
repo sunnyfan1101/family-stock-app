@@ -41,7 +41,7 @@ st.markdown("""
     /* 2. 隱藏預設元件 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;} /* 隱藏上方紅線 */
+    # header {visibility: hidden;} /* 隱藏上方紅線 */
     
     /* 3. 指標卡片 (Metrics) 優化 */
     div[data-testid="stMetricValue"] {
