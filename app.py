@@ -41,7 +41,7 @@ st.markdown("""
     /* 2. 隱藏預設元件 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;} /* 隱藏上方紅線 */
+    
     
     /* 3. 指標卡片 (Metrics) 優化 */
     div[data-testid="stMetricValue"] {
@@ -451,6 +451,7 @@ def get_gross_margin_range(option):
     mapping = {
         "不拘": (None, None), 
         "正毛利 (> 0%)": (0, None), 
+        "中毛利 (> 10%)": (10, None),
         "高毛利 (> 20%)": (20, None), 
         "超高毛利 (> 40%)": (40, None), 
         "頂級毛利 (> 60%)": (60, None)
@@ -541,10 +542,10 @@ def main():
             # 導航選單
             selected_page = option_menu(
                 "功能選單",
-                ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
-                icons=['funnel', 'robot'],
+                ["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"],
+                icons=['funnel', 'robot', 'gear'],
                 menu_icon="cast",
-                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)"].index(st.session_state.current_main_page),
+                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"].index(st.session_state.current_main_page),
                 styles={"container": {"padding": "5px", "background-color": "#262730"},"icon": {"color": "lime", "font-size": "20px"}}
             )
             st.session_state.current_main_page = selected_page
@@ -564,18 +565,45 @@ def main():
                 # 2. ★★★ 關鍵修正：把策略定義搬到這裡 (按鈕外面) ★★★
                 # 這樣不管有沒有按按鈕，電腦都找得到這些資料
                 default_strategies = {
-                    "巴菲特護城河 (穩健)": {
-                        "capital": "大型股 (> 50億)", "beta": "小於 1 (穩健)", "yield": "3% 以上 (及格)", "eps": "0 元以上 (賺錢)",
-                        "pe": "不拘", "revenue": "不拘", "streak": "連增 1 年以上", "position": "不拘"
-                    },
-                    "彼得林區成長 (爆發)": {
-                        "revenue": "高成長 (> 20%)", "pe": "20 倍以下 (正常)", "capital": "中型股 (10億 ~ 50億)",
-                        "yield": "不拘", "beta": "不拘", "streak": "不拘", "position": "不拘"
-                    },
-                    "低檔轉機股 (抄底)": {
-                        "position": "底部 (0 ~ 0.2)", "revenue": "成長 (> 0%)", "change": "不拘",
-                        "pe": "不拘", "capital": "不拘", "streak": "不拘"
-                    }
+                    "陽的選股": {
+                    "industry": ["電機機械","電子零組件業","其他電子業","光電業","半導體業","通信網路業","電腦及周邊設備業","資訊服務業","綠能環保","數位雲端","電子通路業","電器電纜"],            # 注意：產業是一個 List，如果你要特定產業就寫 ["半導體業", "光電業"]
+                    "price": "不拘",          # 改成你想要的選項
+                    "capital": "不拘",               
+                    "position": "低檔 (0.2 ~ 0.4)",
+                    "vol5": "不拘",
+                    "vol20": "不拘",
+                    "vol_spike": "不拘",
+                    "change": "不拘",
+                    "beta": "不拘",
+                    "revenue": "成長 (> 0%)",
+                    "streak": "連增一年以上",
+                    "eps_growth": "成長 (> 0%)",
+                    "eps": "0 元以上 (賺錢)",
+                    "gross": "正毛利 (> 0%)",
+                    "pe": "20 倍以下 (正常)",
+                    "yield": "3%以上 (及格)",
+                    "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
+                },
+
+            "每日爆量": {
+                "industry": ["全部"],
+                "price": "不拘",          # 改成你想要的選項
+                "capital": "不拘",               
+                "position": "不拘",
+                "vol5": "不拘",
+                "vol20": "不拘",
+                "vol_spike": "大於 1.5 倍",
+                "change": "不拘",
+                "beta": "不拘",
+                "revenue": "成長 (> 0%)",
+                "streak": "連增一年以上",
+                "eps_growth": "成長 (> 0%)",
+                "eps": "0 元以上 (賺錢)",
+                "gross": "正毛利 (> 0%)",
+                "pe": "20 倍以下 (正常)",
+                "yield": "3%以上 (及格)",
+                "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
+            }
                 }
                 
                 # 初始化 filter_keys (如果之前沒定義過)
@@ -884,7 +912,7 @@ def main():
                     eps_growth_opt = st.selectbox("EPS 成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "翻倍 (> 100%)", "衰退 (< 0%)"], key='sel_eps_growth')
                     eps_opt = st.selectbox("EPS 數值", ["不拘", "0 元以上 (賺錢)", "3 元以上 (穩健)", "5 元以上 (高獲利)"], key='sel_eps')
                 with c3:
-                    gross_opt = st.selectbox("毛利率", ["不拘", "正毛利 (> 0%)", "高毛利 (> 20%)", "超高毛利 (> 40%)", "頂級毛利 (> 60%)"], key='sel_gross')
+                    gross_opt = st.selectbox("毛利率", ["不拘", "正毛利 (> 0%)","中毛利 (> 10%)", "高毛利 (> 20%)", "超高毛利 (> 40%)", "頂級毛利 (> 60%)"], key='sel_gross')
 
             with tab4: # 股利估值
                 c1, c2 = st.columns(2)
