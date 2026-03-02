@@ -390,29 +390,61 @@ def update_stock_data(progress_bar=None, status_text=None):
         
         time.sleep(0.2)
         
-    # --- Part B: 新增每日市場統計 ---
-    print("\n📊 正在計算今日大盤創新低家數...")
+    # --- Part B: 新增與補齊每日市場統計 ---
+    print("\n📊 正在檢查並補齊大盤創新低家數...")
     try:
-        cursor.execute("SELECT MAX(date) FROM daily_prices")
-        latest_date = cursor.fetchone()[0]
+        # 0. 確保表格存在
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS market_stats (
+                date TEXT PRIMARY KEY,
+                new_low_count INTEGER,
+                updated_at TEXT
+            )
+        ''')
         
-        if latest_date:
-            sql_stat_position = """
-            SELECT COUNT(*) FROM stocks 
-            WHERE (year_high - year_low) > 0 
-            AND ( (SELECT close FROM daily_prices WHERE stock_id = stocks.stock_id ORDER BY date DESC LIMIT 1) - year_low ) / (year_high - year_low) <= 0.01
-            """
-            cursor.execute(sql_stat_position)
-            low_count = cursor.fetchone()[0]
-            print(f"📅 日期: {latest_date} | 📉 創新低(位階=0)家數: {low_count}")
+        # 1. 找出股價表有，但統計表沒有的「漏洞日期」(從2026開始查)
+        cursor.execute("""
+            SELECT DISTINCT date 
+            FROM daily_prices 
+            WHERE date >= '2026-01-01' 
+            AND date NOT IN (SELECT date FROM market_stats)
+            ORDER BY date ASC
+        """)
+        missing_dates = [row[0] for row in cursor.fetchall()]
+
+        if not missing_dates:
+            print("✅ 大盤統計已是最新，無破洞需補齊。")
+        else:
+            print(f"🔍 發現 {len(missing_dates)} 天缺失的統計資料，開始自動補齊...")
             
-            cursor.execute('''
-                INSERT OR REPLACE INTO market_stats (date, new_low_count, updated_at)
-                VALUES (?, ?, ?)
-            ''', (latest_date, low_count, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            # 2. 迴圈逐日計算並補齊
+            for target_date in missing_dates:
+                # 這裡使用當天收盤價與 stocks 表的年低點做計算
+                sql_stat_position = """
+                SELECT COUNT(*) 
+                FROM stocks s
+                JOIN daily_prices d ON s.stock_id = d.stock_id
+                WHERE d.date = ? 
+                AND (s.year_high - s.year_low) > 0 
+                AND (d.close - s.year_low) / (s.year_high - s.year_low) <= 0.01
+                """
+                cursor.execute(sql_stat_position, (target_date,))
+                low_count = cursor.fetchone()[0]
+                
+                # 寫入資料庫
+                cursor.execute('''
+                    INSERT OR REPLACE INTO market_stats (date, new_low_count, updated_at)
+                    VALUES (?, ?, ?)
+                ''', (target_date, low_count, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                
+                print(f"📅 補齊日期: {target_date} | 📉 創新低家數: {low_count}")
+            
             conn.commit()
+            print("✅ 大盤統計資料補齊完成！")
+
     except Exception as e:
         print(f"❌ 大盤統計失敗: {e}")
+        
 
     conn.close()
 

@@ -257,94 +257,85 @@ def get_all_stocks_list():
     return stock_options
 
 def plot_candlestick(df, stock_id, name, period_type="日線"):
-
-    # [修改點] 標題使用傳進來的 period_type
     title_text = f'{stock_id} {name} - {period_type}走勢'
 
-    # 1. 資料處理：確保日期格式正確
+    # 1. 資料處理：確保日期是「真實的 Datetime 格式」(不要轉成字串)
     df['date'] = pd.to_datetime(df['date'])
-    df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
     
-    # 2. 建立子圖 (開啟 shared_xaxes 來同步縮放)
+    # 2. 建立子圖
     fig = make_subplots(
         rows=2, cols=1, 
-        shared_xaxes=True,  # 關鍵：這會讓上下圖表的 X 軸連動
-        vertical_spacing=0.08, # ★ 修改點 1：加大垂直間距 (原本 0.02 太擠了，改成 0.08)
+        shared_xaxes=True,
+        vertical_spacing=0.05,   # 稍微拉近一點上下圖的距離
         subplot_titles=(title_text, '成交量'),
-        row_heights=[0.7, 0.3]   # ★ 修改點 2：使用新版寫法設定高度比例 (上70%, 下30%)
+        row_heights=[0.7, 0.3]
     )
     
-    # 3. K線圖 (上圖)
+    # 3. K線圖 (上圖) - 注意：x 改用 df['date']
     fig.add_trace(go.Candlestick(
-        x=df['date_str'], 
+        x=df['date'], 
         open=df['open'], high=df['high'], low=df['low'], close=df['close'], 
         name='K線',
         increasing_line_color='#FF4B4B', decreasing_line_color='#00FF7F',
-        showlegend=False # 隱藏圖例避免擋住畫面
+        showlegend=False
     ), row=1, col=1)
     
     # 4. 均線 (上圖)
-    fig.add_trace(go.Scatter(x=df['date_str'], y=df['ma_5'], mode='lines', name='MA5', line=dict(color='orange', width=1)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['date_str'], y=df['ma_20'], mode='lines', name='MA20', line=dict(color='#BA55D3', width=1)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['date'], y=df['ma_5'], mode='lines', name='MA5', line=dict(color='orange', width=1.5)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['date'], y=df['ma_20'], mode='lines', name='MA20', line=dict(color='#BA55D3', width=1.5)), row=1, col=1)
     
-    # 5. 成交量 (下圖) - 顏色優化
+    # 5. 成交量 (下圖)
     vol_colors = ['#FF4B4B' if c >= o else '#00FF7F' for c, o in zip(df['close'], df['open'])]
     fig.add_trace(go.Bar(
-        x=df['date_str'], 
+        x=df['date'], 
         y=df['volume'], 
         marker_color=vol_colors, 
         name='成交量',
         showlegend=False
     ), row=2, col=1)
     
-    # --- 關鍵修正區：計算縮放範圍與成交量高度 ---
+    # ==========================================
+    # ★★★ 終極優化區：時間軸 (Date Axis) 縮放設定 ★★★
+    # ==========================================
     
-    # A. 計算預設顯示範圍 (最近 120 根 K 棒)
-    # 對於 Category 軸，我們最好給它 "索引 (Index)" 或是 "精確的字串範圍"
+    # A. 計算預設顯示範圍 (約 120 根 K 棒 = 半年)
     if len(df) > 120:
-        start_date = df['date_str'].iloc[-120]
-        end_date = df['date_str'].iloc[-1]
-        initial_range = [start_date, end_date]
-    else:
-        initial_range = None # 資料太少就全顯示
-
-    # B. 計算成交量 Y 軸上限 (讓成交量看起來高一點)
-    # 我們取最近 120 天的最大量來設定，而不是 5 年的最大量，這樣近期才看得清楚
-    if len(df) > 120:
+        start_date = df['date'].iloc[-120]
+        end_date = df['date'].iloc[-1]
+        
+        # 加上一點右邊的空白 (Padding)，讓最後一根 K 線不要死貼著螢幕邊緣
+        padding = pd.Timedelta(days=5) 
+        initial_range = [start_date, end_date + padding]
+        
+        # 成交量 Y 軸上限：只看這半年的最大量
         recent_vol = df['volume'].tail(120)
-        vol_max = recent_vol.max() * 1.1 # 留 10% 頭部空間
+        vol_max = recent_vol.max() * 1.1 
     else:
+        initial_range = None
         vol_max = df['volume'].max() * 1.1 if not df.empty else 1000
 
-    # --- Layout 設定 ---
+    # B. 全局 Layout 設定
     fig.update_layout(
         height=600,
         template="plotly_dark",
-        margin=dict(l=50, r=20, t=50, b=50),
-        xaxis_rangeslider_visible=False, # 關閉原本的 slider，因為它會破壞 category 軸的同步
-        dragmode='pan',
-        
-        # 設定 X 軸 (共用軸)
-        xaxis=dict(
-            type='category',     # 移除假日空洞
-            categoryorder='category ascending', 
-            range=initial_range, # ★ 這裡強制設定初始範圍
-            nticks=8,            # 減少刻度密度
-            tickangle=0          # 日期轉正比較好讀
-        ),
-        
-        # 設定 X 軸 (下圖的 X 軸，通常被隱藏但需要確保屬性一致)
-        xaxis2=dict(
-            type='category',
-            categoryorder='category ascending',
-            matches='x' # ★ 強制下圖 X 軸跟隨上圖
-        ),
-
-        # 設定 Y 軸 (成交量)
-        yaxis2=dict(
-            range=[0, vol_max], # ★ 固定高度
-            showgrid=False
-        )
+        margin=dict(l=50, r=20, t=50, b=20), # 縮小底邊距，讓畫面更緊湊
+        xaxis_rangeslider_visible=False,     # 關閉底部醜醜的捲軸
+        dragmode='pan',                      # ★ 預設為平移模式 (十字手)，可直接左右拖曳
+        hovermode="x unified",               # ★ 游標顯示垂直線，一次列出當天所有數據
+        yaxis2=dict(range=[0, vol_max], showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+    )
+    
+    # C. X 軸終極設定 (套用至所有子圖)
+    fig.update_xaxes(
+        type="date",                         # ★ 關鍵1：告訴 Plotly 這是真實時間軸
+        range=initial_range,                 # ★ 關鍵2：時間軸模式下，range 就能完美運作
+        rangebreaks=[
+            dict(bounds=["sat", "mon"])      # ★ 關鍵3：隱藏週末假日 (六、日不顯示)
+        ],
+        showgrid=True,
+        gridcolor='rgba(255,255,255,0.05)',
+        nticks=8                             # ★ 關鍵4：強制只顯示約 8 個日期標籤，乾淨俐落
     )
     
     return fig
@@ -542,10 +533,10 @@ def main():
             # 導航選單
             selected_page = option_menu(
                 "功能選單",
-                ["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"],
-                icons=['funnel', 'robot', 'gear'],
+                ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
+                icons=['funnel', 'robot'],
                 menu_icon="cast",
-                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)", "系統設定"].index(st.session_state.current_main_page),
+                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)"].index(st.session_state.current_main_page),
                 styles={"container": {"padding": "5px", "background-color": "#262730"},"icon": {"color": "lime", "font-size": "20px"}}
             )
             st.session_state.current_main_page = selected_page
@@ -569,14 +560,14 @@ def main():
                     "industry": ["電機機械","電子零組件業","其他電子業","光電業","半導體業","通信網路業","電腦及周邊設備業","資訊服務業","綠能環保","數位雲端","電子通路業","電器電纜"],            # 注意：產業是一個 List，如果你要特定產業就寫 ["半導體業", "光電業"]
                     "price": "不拘",          # 改成你想要的選項
                     "capital": "不拘",               
-                    "position": "低檔 (0 ~ 0.2)",
+                    "position": "底部 (0 ~ 0.2)",
                     "vol5": "不拘",
                     "vol20": "不拘",
                     "vol_spike": "不拘",
                     "change": "不拘",
                     "beta": "不拘",
                     "revenue": "成長 (> 0%)",
-                    "streak": "連增一年以上",
+                    "streak": "連增 1 年以上",
                     "eps_growth": "成長 (> 0%)",
                     "eps": "0 元以上 (賺錢)",
                     "gross": "正毛利 (> 0%)",
@@ -585,45 +576,45 @@ def main():
                     "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
                 },
 
-            "陽的選股(中低位階)": {
-                "industry": ["電機機械","電子零組件業","其他電子業","光電業","半導體業","通信網路業","電腦及周邊設備業","資訊服務業","綠能環保","數位雲端","電子通路業","電器電纜"],            # 注意：產業是一個 List，如果你要特定產業就寫 ["半導體業", "光電業"]
+                "陽的選股(中低位階)": {
+                    "industry": ["電機機械","電子零組件業","其他電子業","光電業","半導體業","通信網路業","電腦及周邊設備業","資訊服務業","綠能環保","數位雲端","電子通路業","電器電纜"],            # 注意：產業是一個 List，如果你要特定產業就寫 ["半導體業", "光電業"]
+                        "price": "不拘",          # 改成你想要的選項
+                        "capital": "不拘",               
+                        "position": "低檔 (0.2 ~ 0.4)",
+                        "vol5": "不拘",
+                        "vol20": "不拘",
+                        "vol_spike": "不拘",
+                        "change": "不拘",
+                        "beta": "不拘",
+                        "revenue": "成長 (> 0%)",
+                        "streak": "連增 1 年以上",
+                        "eps_growth": "成長 (> 0%)",
+                        "eps": "0 元以上 (賺錢)",
+                        "gross": "正毛利 (> 0%)",
+                        "pe": "20 倍以下 (正常)",
+                        "yield": "3% 以上 (及格)",
+                        "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
+                },
+
+                "每日爆量": {
+                    "industry": ["全部"],
                     "price": "不拘",          # 改成你想要的選項
                     "capital": "不拘",               
-                    "position": "底部 (0.2 ~ 0.4)",
+                    "position": "底部 (0 ~ 0.2)",
                     "vol5": "不拘",
                     "vol20": "不拘",
-                    "vol_spike": "不拘",
+                    "vol_spike": "大於 1.5 倍",
                     "change": "不拘",
                     "beta": "不拘",
                     "revenue": "成長 (> 0%)",
-                    "streak": "連增一年以上",
+                    "streak": "連增 1 年以上",
                     "eps_growth": "成長 (> 0%)",
                     "eps": "0 元以上 (賺錢)",
                     "gross": "正毛利 (> 0%)",
                     "pe": "20 倍以下 (正常)",
-                    "yield": "3%以上 (及格)",
+                    "yield": "3% 以上 (及格)",
                     "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
-            },
-
-            "每日爆量": {
-                "industry": ["全部"],
-                "price": "不拘",          # 改成你想要的選項
-                "capital": "不拘",               
-                "position": "不拘",
-                "vol5": "不拘",
-                "vol20": "不拘",
-                "vol_spike": "大於 1.5 倍",
-                "change": "不拘",
-                "beta": "不拘",
-                "revenue": "成長 (> 0%)",
-                "streak": "連增一年以上",
-                "eps_growth": "成長 (> 0%)",
-                "eps": "0 元以上 (賺錢)",
-                "gross": "正毛利 (> 0%)",
-                "pe": "20 倍以下 (正常)",
-                "yield": "3%以上 (及格)",
-                "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
-            }
+                }
                 }
                 
                 # 初始化 filter_keys (如果之前沒定義過)
