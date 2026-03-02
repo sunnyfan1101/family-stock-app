@@ -298,14 +298,14 @@ def plot_candlestick(df, stock_id, name, period_type="日線"):
     # ★★★ 終極優化區：時間軸 (Date Axis) 縮放設定 ★★★
     # ==========================================
     
+    # 取得歷史資料的「最老日期」與「最新日期」
+    min_date = df['date'].min()
+    max_date = df['date'].max() + pd.Timedelta(days=5) # 保留右邊 5 天的呼吸空間
+
     # A. 計算預設顯示範圍 (約 120 根 K 棒 = 半年)
     if len(df) > 120:
         start_date = df['date'].iloc[-120]
-        end_date = df['date'].iloc[-1]
-        
-        # 加上一點右邊的空白 (Padding)，讓最後一根 K 線不要死貼著螢幕邊緣
-        padding = pd.Timedelta(days=5) 
-        initial_range = [start_date, end_date + padding]
+        initial_range = [start_date, max_date]
         
         # 成交量 Y 軸上限：只看這半年的最大量
         recent_vol = df['volume'].tail(120)
@@ -318,27 +318,34 @@ def plot_candlestick(df, stock_id, name, period_type="日線"):
     fig.update_layout(
         height=600,
         template="plotly_dark",
-        margin=dict(l=50, r=20, t=50, b=20), # 縮小底邊距，讓畫面更緊湊
-        xaxis_rangeslider_visible=False,     # 關閉底部醜醜的捲軸
-        dragmode='pan',                      # ★ 預設為平移模式 (十字手)，可直接左右拖曳
-        hovermode="x unified",               # ★ 游標顯示垂直線，一次列出當天所有數據
+        margin=dict(l=50, r=20, t=50, b=20), 
+        xaxis_rangeslider_visible=False,     
+        dragmode='pan',                      
+        hovermode="x unified",               
         yaxis2=dict(range=[0, vol_max], showgrid=False),
         yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     )
     
     # C. X 軸終極設定 (套用至所有子圖)
     fig.update_xaxes(
-        type="date",                         # ★ 關鍵1：告訴 Plotly 這是真實時間軸
-        range=initial_range,                 # ★ 關鍵2：時間軸模式下，range 就能完美運作
+        type="date",                         
+        range=initial_range,                 
+        minallowed=min_date,                 # ★ 關鍵：鎖定左邊界 (禁止拉到比第一筆資料更早)
+        maxallowed=max_date,                 # ★ 關鍵：鎖定右邊界 (禁止拉到遙遠的未來)
         rangebreaks=[
-            dict(bounds=["sat", "mon"])      # ★ 關鍵3：隱藏週末假日 (六、日不顯示)
+            dict(bounds=["sat", "mon"])      
         ],
         showgrid=True,
         gridcolor='rgba(255,255,255,0.05)',
-        nticks=8                             # ★ 關鍵4：強制只顯示約 8 個日期標籤，乾淨俐落
+        nticks=8                             
     )
     
     return fig
+
+# ==========================================
+# 2. UI 輔助函數 (下拉選單邏輯)
+# ==========================================
+
 
 # ==========================================
 # 2. UI 輔助函數 (下拉選單邏輯)
@@ -354,11 +361,24 @@ def get_yield_range(option):
     return mapping.get(option, (None, None))
 
 def get_eps_range(option):
-    mapping = {"不拘": (None, None), "0 元以上 (賺錢)": (0, None), "3 元以上 (穩健)": (3, None), "5 元以上 (高獲利)": (5, None), "10 元以上 (股王)": (10, None)}
+    mapping = {
+        "不拘": (None, None), 
+        "0 元以上 (賺錢)": (0, None), 
+        "1.5 元以上 (及格)": (1.5, None),  # ★ NEW ★ 
+        "3 元以上 (穩健)": (3, None), 
+        "5 元以上 (高獲利)": (5, None), 
+        "10 元以上 (股王)": (10, None)
+    }
     return mapping.get(option, (None, None))
 
 def get_price_range(option):
-    mapping = {"不拘": (None, None), "100 元以上": (100, None), "30 ~ 100 元": (30, 100), "30 元以下": (0, 30)}
+    mapping = {
+        "不拘": (None, None), 
+        "100 元以上": (100, None), 
+        "30 ~ 100 元": (30, 100), 
+        "20 ~ 100 元": (20, 100),  # ★ NEW ★ 
+        "30 元以下": (0, 30)
+    }
     return mapping.get(option, (None, None))
 
 def get_change_range(option):
@@ -381,6 +401,8 @@ def get_revenue_range(option):
 def get_position_range(option):
     # 位階 (0.0 ~ 1.0)
     mapping = {
+        "不拘": (None, None),
+        "低基期 (0 ~ 0.4)": (0, 0.4),   # ★★★ 幫家人新增的這個專屬區間 ★★★
         "底部 (0 ~ 0.2)": (0, 0.2), 
         "低檔 (0.2 ~ 0.4)": (0.2, 0.4), 
         "中階 (0.4 ~ 0.6)": (0.4, 0.6), 
@@ -391,11 +413,11 @@ def get_position_range(option):
 
 # --- 新增：股本與營收連增的選項邏輯 ---
 def get_capital_range(option):
-    # 股本 (億)
     mapping = {
         "不拘": (None, None),
         "小型股 (< 10億)": (0, 10),
         "中型股 (10億 ~ 50億)": (10, 50),
+        "中大型股 (10億 ~ 70億)": (10, 70),  # ★ NEW ★ 
         "大型股 (> 50億)": (50, None),
         "超大型權值股 (> 200億)": (200, None)
     }
@@ -597,23 +619,23 @@ def main():
                 },
 
                 "每日爆量": {
-                    "industry": ["全部"],
-                    "price": "不拘",          # 改成你想要的選項
-                    "capital": "不拘",               
-                    "position": "底部 (0 ~ 0.2)",
-                    "vol5": "不拘",
-                    "vol20": "不拘",
-                    "vol_spike": "大於 1.5 倍",
-                    "change": "不拘",
-                    "beta": "不拘",
-                    "revenue": "成長 (> 0%)",
-                    "streak": "連增 1 年以上",
-                    "eps_growth": "成長 (> 0%)",
-                    "eps": "0 元以上 (賺錢)",
-                    "gross": "正毛利 (> 0%)",
-                    "pe": "20 倍以下 (正常)",
-                    "yield": "3% 以上 (及格)",
-                    "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
+                "industry": ["全部"],
+                "price": "20 ~ 100 元",
+                "capital": "中大型股 (10億 ~ 70億)",               
+                "position": "低基期 (0 ~ 0.4)",
+                "vol5": "1000 張以上",
+                "vol20": "不拘",
+                "vol_spike": "大於 1.5 倍",
+                "change": "不拘",
+                "beta": "不拘",
+                "revenue": "成長 (> 0%)",
+                "streak": "連增 1 年以上",
+                "eps_growth": "成長 (> 0%)",
+                "eps": "1.5 元以上 (及格)",
+                "gross": "中毛利 (> 10%)",
+                "pe": "20 倍以下 (正常)",
+                "yield": "3% 以上 (及格)",
+                "consolidation": "大箱型 3 個月 (> 60天, ±20%)"
                 }
                 }
                 
@@ -892,20 +914,21 @@ def main():
             # 定義分頁
             tab1, tab2, tab3, tab4 = st.tabs(["🏢 基本門檻", "📈 技術籌碼", "💰 獲利財報", "💎 股利估值"])
             
+            
             with tab1: # 基本門檻
                 c1, c2 = st.columns(2)
                 with c1:
-                    price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上", "30 ~ 100 元", "30 元以下"], key='sel_price')
-                    capital_opt = st.selectbox("股本規模", ["不拘", "小型股 (< 10億)", "中型股 (10億 ~ 50億)", "大型股 (> 50億)", "超大型權值股 (> 200億)"], key='sel_capital')
+                    price_opt = st.selectbox("股價範圍", ["不拘", "100 元以上", "30 ~ 100 元", "20 ~ 100 元", "30 元以下"], key='sel_price')
+                    capital_opt = st.selectbox("股本規模", ["不拘", "小型股 (< 10億)", "中型股 (10億 ~ 50億)", "中大型股 (10億 ~ 70億)", "大型股 (> 50億)", "超大型權值股 (> 200億)"], key='sel_capital')
                 with c2:
                     change_opt = st.selectbox("今日漲跌", ["不拘", "上漲 (> 0%)", "強勢 (> 3%)", "漲停 (> 9%)", "下跌 (< 0%)", "跌深 (<-3%)"], key='sel_change')
             
             with tab2: # 技術籌碼
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    # 先從 Session State 撈出來，如果沒有就預設 '1y'
                     current_period = st.session_state.get('period_val', '1y')
-                    position_opt = st.selectbox(f"位階高低 ({current_period.upper()})", ["不拘", "底部 (0 ~ 0.2)", "低檔 (0.2 ~ 0.4)", "中階 (0.4 ~ 0.6)", "高檔 (0.6 ~ 0.8)", "頭部 (0.8 ~ 1.0)"], key='sel_pos')
+                    # ★★★ 關鍵修改：在陣列裡面補上 "低基期 (0 ~ 0.4)" ★★★
+                    position_opt = st.selectbox(f"位階高低 ({current_period.upper()})", ["不拘", "低基期 (0 ~ 0.4)", "底部 (0 ~ 0.2)", "低檔 (0.2 ~ 0.4)", "中階 (0.4 ~ 0.6)", "高檔 (0.6 ~ 0.8)", "頭部 (0.8 ~ 1.0)"], key='sel_pos')
                     consolidation_opt = st.selectbox("盤整型態", ["不拘", "盤整 1 個月 (> 20天, ±10%)", "盤整 3 個月 (> 60天, ±10%)", "盤整半年 (> 120天, ±10%)","大箱型 3 個月 (> 60天, ±20%)", "大箱型半年 (> 120天, ±20%)"], key='sel_consolidation')
                 with c2:
                     vol_ma5_opt = st.selectbox("5日均量 (週量)", ["不拘", "500 張以上", "1000 張以上", "5000 張以上", "10000 張以上"], key='sel_vol5')
@@ -921,7 +944,7 @@ def main():
                     streak_opt = st.selectbox("營收連增 (Streak)", ["不拘", "連增 1 年以上", "連增 2 年以上", "連增 3 年以上"], key='sel_streak')
                 with c2:
                     eps_growth_opt = st.selectbox("EPS 成長 (YoY)", ["不拘", "成長 (> 0%)", "高成長 (> 20%)", "翻倍 (> 100%)", "衰退 (< 0%)"], key='sel_eps_growth')
-                    eps_opt = st.selectbox("EPS 數值", ["不拘", "0 元以上 (賺錢)", "3 元以上 (穩健)", "5 元以上 (高獲利)"], key='sel_eps')
+                    eps_opt = st.selectbox("EPS 數值", ["不拘", "0 元以上 (賺錢)", "1.5 元以上 (及格)", "3 元以上 (穩健)", "5 元以上 (高獲利)"], key='sel_eps')
                 with c3:
                     gross_opt = st.selectbox("毛利率", ["不拘", "正毛利 (> 0%)","中毛利 (> 10%)", "高毛利 (> 20%)", "超高毛利 (> 40%)", "頂級毛利 (> 60%)"], key='sel_gross')
 
