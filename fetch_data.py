@@ -1,4 +1,4 @@
-# fetch_data.py (Local Version - 含盤整、三率強力計算、大盤統計)
+# fetch_data.py (Local Version - 含盤整、三率強力計算、大盤統計、預先計算)
 import yfinance as yf
 import pandas as pd
 import sqlite3
@@ -8,7 +8,98 @@ import random
 from datetime import datetime, timedelta
 from io import StringIO
 import database
-import numpy as np # 記得引入 numpy
+import numpy as np
+
+# ★★★ 匯入預先計算模組 ★★★
+try:
+    from fetch_precompute import (
+        get_connection as pc_get_connection,
+        precompute_position,
+        precompute_bias,
+        precompute_vol_spike,
+        precompute_consolidation_log,
+        update_precomputed_metrics,
+        update_weekly_ma
+    )
+    PRECOMPUTE_AVAILABLE = True
+except ImportError:
+    PRECOMPUTE_AVAILABLE = False
+    print("⚠️  fetch_precompute.py 未找到，預先計算功能未啟用")
+
+# ★★★ 匯入月營收抓取模組 ★★★
+try:
+    from fetch_revenue import update_all_stocks as update_monthly_revenue
+    REVENUE_AVAILABLE = True
+except ImportError:
+    REVENUE_AVAILABLE = False
+    print("⚠️  fetch_revenue.py 未找到，月營收增量更新未啟用")
+
+# ★★★ 單一股票預先計算函數 (供每日更新時呼叫) ★★★
+def calculate_precompute_for_stock(cursor, stock_id):
+    """
+    為單一股票執行預先計算指標更新
+    """
+    try:
+        # 建立臨時連線
+        conn = sqlite3.connect("stock_data.db")
+        
+        # 計算位階
+        position_1y, position_2y = precompute_position(stock_id, conn)
+        
+        # 計算乖離率
+        bias_20, bias_60 = precompute_bias(stock_id, conn)
+        
+        # 計算爆量倍數
+        vol_spike = precompute_vol_spike(stock_id, conn)
+        
+        # 計算盤整對數
+        consolidation_log = precompute_consolidation_log(stock_id, conn)
+        
+        # 更新 stocks 表
+        cursor.execute('''
+            UPDATE stocks SET
+                position_1y = ?,
+                position_2y = ?,
+                bias_20 = ?,
+                bias_60 = ?,
+                vol_spike = ?,
+                consolidation_log = ?,
+                last_updated = ?
+            WHERE stock_id = ?
+        ''', (
+            position_1y if position_1y is not None else 0,
+            position_2y if position_2y is not None else 0,
+            bias_20 if bias_20 is not None else 0,
+            bias_60 if bias_60 is not None else 0,
+            vol_spike if vol_spike is not None else 0,
+            consolidation_log if consolidation_log is not None else 0,
+            datetime.now().strftime('%Y-%m-%d'),
+            stock_id
+        ))
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ {stock_id} 預先計算失敗: {e}")
+        return False
+
+
+# ★★★ 批次預先計算 (供每日更新結束後呼叫) ★★★
+def run_batch_precompute():
+    """
+    批次更新所有股票的預先計算指標
+    """
+    if PRECOMPUTE_AVAILABLE:
+        print("\n🚀 開始批次預先計算...")
+        update_precomputed_metrics()
+        update_weekly_ma()
+        print("✅ 批次預先計算完成！")
+    else:
+        print("⚠️ 預先計算模組未載入，跳過批次計算")
+
+
+# --- 1. 取得股票清單 ---
 
 # --- 1. 取得股票清單 ---
 def get_tw_stock_list():
@@ -362,7 +453,11 @@ def update_stock_data(progress_bar=None, status_text=None):
                       year_high, year_low, capital_billion, last_vol_ma5, last_vol_ma20, 
                       year_high_2y, year_low_2y, gross_margin_pct, 
                       operating_margin_pct, pretax_margin_pct, net_margin_pct, consolidation_days, consolidation_days_20,
+                      0, 0, 0, 0, 0, 0,  # 預先計算欄位預設值
                       datetime.now().strftime('%Y-%m-%d')))
+
+            # --- ★★★ 預先計算指標 (每次更新後立即計算) ★★★
+            calculate_precompute_for_stock(cursor, stock_id)
 
             # --- 寫入資料庫 (daily_prices) ---
             if not new_hist.empty:
@@ -446,6 +541,20 @@ def update_stock_data(progress_bar=None, status_text=None):
         print(f"❌ 大盤統計失敗: {e}")
         
 
+    # ★★★ Part C: 月營收智能增量更新 ★★★
+    if REVENUE_AVAILABLE:
+        print("\n📊 開始月營收智能增量更新...")
+        try:
+            update_monthly_revenue(start_date="2024-01-01", batch_size=50)
+            print("✅ 月營收增量更新完成！")
+        except Exception as e:
+            print(f"⚠️ 月營收更新失敗: {e}")
+    else:
+        print("\n⚠️ 月營收模組未載入，跳過增量更新")
+    
+    # ★★★ Part D: 批次預先計算所有股票指標 ★★★
+    run_batch_precompute()
+    
     conn.close()
 
     # ==========================================

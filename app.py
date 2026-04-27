@@ -113,7 +113,7 @@ def load_data(filters):
         col_h = 's.year_high'
         col_l = 's.year_low'
 
-    # 2. SQL 查詢指令 (加入新欄位 capital, vol_ma, streak)
+    # 2. SQL 查詢指令 (改用預先計算欄位)
     base_sql = f"""
     SELECT 
         s.stock_id, s.name, s.industry, s.market_type,
@@ -121,6 +121,7 @@ def load_data(filters):
         s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
         s.eps_growth, s.gross_margin, 
         s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days, s.consolidation_days_20,
+        s.position_1y, s.position_2y, s.bias_20, s.bias_60, s.vol_spike, s.consolidation_log,
         {col_h} as year_high, {col_l} as year_low,
         d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
     FROM stocks s
@@ -168,15 +169,13 @@ def load_data(filters):
         conditions.append("s.revenue_streak >= ?")
         params.append(filters.get('streak_min'))
 
-    # 位階篩選 (使用動態欄位 col_h, col_l)
+    # 位階篩選 (使用預先計算欄位 position_1y)
     if filters.get('pos_min') is not None or filters.get('pos_max') is not None:
-        # 公式：(收盤 - 低) / (高 - 低)
-        pos_sql = f"(d.close - {col_l}) / NULLIF({col_h} - {col_l}, 0)"
         if filters.get('pos_min') is not None:
-            conditions.append(f"{pos_sql} >= ?")
+            conditions.append("s.position_1y >= ?")
             params.append(filters.get('pos_min'))
         if filters.get('pos_max') is not None:
-            conditions.append(f"{pos_sql} <= ?")
+            conditions.append("s.position_1y <= ?")
             params.append(filters.get('pos_max'))
 
     if filters.get('consolidation_days') is not None:
@@ -195,14 +194,11 @@ def load_data(filters):
 
     try:
         df = pd.read_sql(final_sql, conn, params=params)
-        # 計算位階 (前端顯示用)
-        df['position'] = (df['close'] - df['year_low']) / (df['year_high'] - df['year_low'])
-
-        # [修改點 C] 計算爆量倍數 (Python 端計算)
-        # 邏輯：今日成交量 / 20日均量 (避免除以0)
-        df['vol_spike'] = df.apply(lambda x: x['volume'] / x['vol_ma_20'] if x['vol_ma_20'] > 0 else 0, axis=1)
+        # 移除動態計算，改為使用預先計算欄位
+        # df['position'] = (df['close'] - df['year_low']) / (df['year_high'] - df['year_low'])
+        # df['vol_spike'] = df.apply(lambda x: x['volume'] / x['vol_ma_20'] if x['vol_ma_20'] > 0 else 0, axis=1)
         
-        # [修改點 D] 執行爆量篩選
+        # 爆量篩選使用預先計算欄位
         if filters.get('vol_spike_min'):
             df = df[df['vol_spike'] >= filters['vol_spike_min']]
     except Exception as e:
@@ -1155,17 +1151,51 @@ def main():
                         k2.metric("爆量倍數", f"{row['vol_spike']:.1f} x", delta_color="off")
                         
                         current_period_val = st.session_state.get('period_val', '1y') 
-                        k3.metric(f"位階 ({current_period_val})", f"{row['position']:.2f}")
+                        k3.metric(f"位階 ({current_period_val})", f"{row['position_1y']:.2f}")
+                        
+                        # ★★★ 營收 YOY 改用 monthly_revenue 表的累積 YOY ★★★
+                        revenue_yoy_display = "N/A"
+                        revenue_yoy_val = 0
+                        try:
+                            conn_temp = get_connection()
+                            cursor = conn_temp.cursor()
+                            cursor.execute('''
+                                SELECT cumulative_yoy FROM monthly_revenue 
+                                WHERE stock_id = ? ORDER BY year DESC, month DESC LIMIT 1
+                            ''', (row['stock_id'],))
+                            yoy_row = cursor.fetchone()
+                            if yoy_row and yoy_row[0] is not None:
+                                revenue_yoy_val = yoy_row[0]
+                                revenue_yoy_display = f"{revenue_yoy_val:+.1f}%"
+                            conn_temp.close()
+                        except:
+                            pass
                         
                         streak_icon = "🔥" if row['revenue_streak'] >= 3 else ""
-                        k4.metric("營收 YoY", f"{row['revenue_growth']:+.1f}%", f"{streak_icon} 連增{row['revenue_streak']}年")
+                        k4.metric("累積營收 YOY", revenue_yoy_display, f"{streak_icon} 連增{row['revenue_streak']}年")
 
                         # 3. 籌碼與獲利小表格
+                        # ★★★ 營收 YOY 改用 monthly_revenue 表的累積 YOY ★★★
+                        revenue_yoy_display = "N/A"
+                        try:
+                            conn_temp = get_connection()
+                            cursor = conn_temp.cursor()
+                            cursor.execute('''
+                                SELECT cumulative_yoy FROM monthly_revenue 
+                                WHERE stock_id = ? ORDER BY year DESC, month DESC LIMIT 1
+                            ''', (row['stock_id'],))
+                            yoy_row = cursor.fetchone()
+                            if yoy_row and yoy_row[0] is not None:
+                                revenue_yoy_display = f"{yoy_row[0]:+.1f}%"
+                            conn_temp.close()
+                        except:
+                            pass
+                        
                         st.markdown(
                             f"""
-                            | 本益比 (PE) | 股淨比 (PB) | 殖利率 | EPS (近四季) | 毛利率 |
-                            | :---: | :---: | :---: | :---: | :---: |
-                            | **{row['pe_ratio']:.1f}** | **{row['pb_ratio']:.2f}** | **{row['yield_rate']:.2f}%** | **{row['eps']:.2f}** | **{row['gross_margin']:.1f}%** |
+                            | 本益比 (PE) | 股淨比 (PB) | 殖利率 | EPS (近四季) | 毛利率 | 累積營收 YOY |
+                            | :---: | :---: | :---: | :---: | :---: | :---: |
+                            | **{row['pe_ratio']:.1f}** | **{row['pb_ratio']:.2f}** | **{row['yield_rate']:.2f}%** | **{row['eps']:.2f}** | **{row['gross_margin']:.1f}%** | **{revenue_yoy_display}** |
                             """
                         )
 
