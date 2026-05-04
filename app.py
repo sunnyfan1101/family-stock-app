@@ -1133,8 +1133,8 @@ def main():
                 # 處理選取邏輯
                 if len(event.selection.rows) > 0:
                     selected_row_index = event.selection.rows[0]
-                    selected_stock_id = df_result.iloc[selected_row_index]['stock_id']
-                    st.session_state.current_stock_row = df_result.iloc[selected_row_index]
+                    selected_stock_id = df_show.iloc[selected_row_index]['stock_id']
+                    st.session_state.current_stock_row = df_show.iloc[selected_row_index]
                 else:
                     selected_stock_id = None
                     if 'current_stock_row' in st.session_state:
@@ -1143,7 +1143,8 @@ def main():
             with col_detail:
                 # ★★★ 右側詳情卡片 (維持卡片式設計) ★★★
                 if selected_stock_id:
-                    row = df_result[df_result['stock_id'] == selected_stock_id].iloc[0]
+                    # 改用 df_show 確保 position 欄位已動態映射
+                    row = df_show[df_show['stock_id'] == selected_stock_id].iloc[0]
                     
                     with st.container(border=True):
                         # 1. 標題區
