@@ -169,13 +169,15 @@ def load_data(filters):
         conditions.append("s.revenue_streak >= ?")
         params.append(filters.get('streak_min'))
 
-    # 位階篩選 (使用預先計算欄位 position_1y)
+    # 位階篩選 (根據 period 動態選擇 position_1y 或 position_2y)
+    current_period = filters.get('period', '1y')
+    pos_col = "s.position_2y" if current_period == '2y' else "s.position_1y"
     if filters.get('pos_min') is not None or filters.get('pos_max') is not None:
         if filters.get('pos_min') is not None:
-            conditions.append("s.position_1y >= ?")
+            conditions.append(f"{pos_col} >= ?")
             params.append(filters.get('pos_min'))
         if filters.get('pos_max') is not None:
-            conditions.append("s.position_1y <= ?")
+            conditions.append(f"{pos_col} <= ?")
             params.append(filters.get('pos_max'))
 
     if filters.get('consolidation_days') is not None:
@@ -1041,6 +1043,11 @@ def main():
                 df_show['vol_ma_5'] = pd.to_numeric(df_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
                 df_show['vol_ma_20'] = pd.to_numeric(df_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
                 
+                # ★★★ 動態位階映射：根據 period 選擇 position_1y 或 position_2y ★★★
+                current_period = st.session_state.get('period_val', '1y')
+                pos_source = 'position_2y' if current_period == '2y' else 'position_1y'
+                df_show['position'] = df_show[pos_source] if pos_source in df_show.columns else 0
+
                 # 2. 補齊欄位 (加入週/月均量)
                 all_cols = [
                     'stock_id', 'name', 'industry', 'similarity',
@@ -1151,7 +1158,7 @@ def main():
                         k2.metric("爆量倍數", f"{row['vol_spike']:.1f} x", delta_color="off")
                         
                         current_period_val = st.session_state.get('period_val', '1y') 
-                        k3.metric(f"位階 ({current_period_val})", f"{row['position_1y']:.2f}")
+                        k3.metric(f"位階 ({current_period_val})", f"{row['position']:.2f}")
                         
                         # ★★★ 營收 YOY 改用 monthly_revenue 表的累積 YOY ★★★
                         revenue_yoy_display = "N/A"
@@ -1340,6 +1347,11 @@ def main():
                                 sim_show['vol_ma_5'] = pd.to_numeric(sim_show['vol_ma_5'], errors='coerce').fillna(0) / 1000
                                 sim_show['vol_ma_20'] = pd.to_numeric(sim_show['vol_ma_20'], errors='coerce').fillna(0) / 1000
 
+                                # ★★★ 動態位階映射：根據 period 選擇 position_1y 或 position_2y ★★★
+                                period_val = st.session_state.get('period_val', '1y')
+                                pos_source = 'position_2y' if period_val == '2y' else 'position_1y'
+                                sim_show['position'] = sim_show[pos_source] if pos_source in sim_show.columns else 0
+
                                 # 補齊欄位
                                 all_cols = [
                                     'stock_id', 'name', 'industry', 'similarity',
@@ -1422,18 +1434,18 @@ def main():
                                 
                                 st.write("") # 空行分隔
 
-                                # 決定顯示哪一檔股票
+                                # 決定顯示哪一檔股票 (改用 sim_show 確保 position 欄位已動態映射)
                                 target_stock = None
                                 if len(event.selection.rows) > 0:
                                     # 情況 A: 使用者有點選表格 -> 顯示選中的
                                     selected_idx = event.selection.rows[0]
-                                    target_stock = similar_stocks.iloc[selected_idx]
-                                elif len(similar_stocks) > 1:
+                                    target_stock = sim_show.iloc[selected_idx]
+                                elif len(sim_show) > 1:
                                     # 情況 B: 沒選，預設顯示第 2 名 (因為第 1 名通常是自己)
-                                    target_stock = similar_stocks.iloc[1] 
+                                    target_stock = sim_show.iloc[1] 
                                 else:
                                     # 情況 C: 只有 1 檔，顯示自己
-                                    target_stock = similar_stocks.iloc[0]
+                                    target_stock = sim_show.iloc[0]
 
                                 # ★★★ 關鍵修復：同步存入 Session State 讓 AI 知道 ★★★
                                 if target_stock is not None:
