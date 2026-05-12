@@ -397,23 +397,6 @@ def update_stock_data(progress_bar=None, status_text=None):
             if info.get('pretaxMargins') is not None:
                 pretax_margin_pct = info['pretaxMargins'] * 100
             
-            # 如果 Info 沒有，去爬損益表
-            if pretax_margin_pct == 0:
-                try:
-                    fin = ticker.income_stmt
-                    if not fin.empty:
-                        p_income = None
-                        t_revenue = None
-                        for idx in fin.index:
-                            label = str(idx)
-                            if "Pretax Income" in label and p_income is None:
-                                p_income = fin.loc[idx].iloc[0]
-                            if ("Total Revenue" in label or "TotalRevenue" in label) and t_revenue is None:
-                                t_revenue = fin.loc[idx].iloc[0]
-                        
-                        if p_income is not None and t_revenue is not None and t_revenue != 0:
-                            pretax_margin_pct = (p_income / t_revenue) * 100
-                except: pass
 
             revenue_streak = calculate_revenue_streak(ticker)
             shares = info.get('sharesOutstanding', 0)

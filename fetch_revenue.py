@@ -40,39 +40,17 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01"):
             else:
                 print(f"⚠️ {stock_id} 無資料回傳")
                 return pd.DataFrame()
-        elif response.status_code == 403:
-            # 🛑 403 阻擋休眠機制
-            print(f"\n🛑 API 403 Forbidden，休眠 30 分鐘...")
-            time.sleep(1800)
-            print(f"⏰ 休眠結束，重試 {stock_id}...")
-            # 重試一次
-            response2 = requests.get(FINMIND_API_URL, params=params, timeout=30)
-            if response2.status_code == 200:
-                data = response2.json()
-                if data.get("data"):
-                    df = pd.DataFrame(data["data"])
-                    df["revenue"] = df["revenue"] / 1000
-                    return df
-            print(f"❌ {stock_id} 重試後仍失敗 (狀態碼 {response2.status_code})")
-            return pd.DataFrame()
-        elif response.status_code == 402:
-            # 🛑 402 額度耗盡休眠機制
-            print(f"\n🛑 API 402 Payment Required，休眠 60 分鐘...")
-            time.sleep(3600)
-            print(f"⏰ 休眠結束，重試 {stock_id}...")
-            response2 = requests.get(FINMIND_API_URL, params=params, timeout=30)
-            if response2.status_code == 200:
-                data = response2.json()
-                if data.get("data"):
-                    df = pd.DataFrame(data["data"])
-                    df["revenue"] = df["revenue"] / 1000
-                    return df
-            print(f"❌ {stock_id} 重試後仍失敗 (狀態碼 {response2.status_code})")
-            return pd.DataFrame()
+        elif response.status_code in [402, 403]:
+            # 🛑 遇到 402 或 403，不再傻傻睡覺！
+            # 直接拋出例外 (Exception)，交給外層主迴圈觸發「優雅下班」機制
+            raise Exception(f"API_LIMIT_{response.status_code}")
         else:
             print(f"❌ {stock_id} API 錯誤 (狀態碼 {response.status_code})")
             return pd.DataFrame()
     except Exception as e:
+        # 如果是我們自己拋出的 API_LIMIT 錯誤，直接往上傳遞，不要吃掉！
+        if "API_LIMIT" in str(e):
+            raise e
         print(f"❌ {stock_id} 抓取失敗: {e}")
         return pd.DataFrame()
 
@@ -309,28 +287,15 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50):
             count = update_monthly_revenue_for_stock(stock_id, start_date)
             total_inserted += count
         except Exception as e:
-            # 🛑 402 / 403 斷路休眠機制
             error_str = str(e)
-            if "402" in error_str or "Payment Required" in error_str:
-                print(f"\n🛑 API 402 額度耗盡，休眠 60 分鐘...")
-                time.sleep(3600)
-                print(f"⏰ 休眠結束，繼續處理 {stock_id}...")
-                # 重試一次
-                try:
-                    count = update_monthly_revenue_for_stock(stock_id, start_date)
-                    total_inserted += count
-                except Exception as e2:
-                    print(f"❌ 重試失敗: {e2}")
-            elif "403" in error_str or "Forbidden" in error_str:
-                print(f"\n🛑 API 403 Forbidden，休眠 30 分鐘...")
-                time.sleep(1800)
-                print(f"⏰ 休眠結束，繼續處理 {stock_id}...")
-                # 重試一次
-                try:
-                    count = update_monthly_revenue_for_stock(stock_id, start_date)
-                    total_inserted += count
-                except Exception as e2:
-                    print(f"❌ 重試失敗: {e2}")
+            # 🛑 捕捉到底層傳上來的 API 上限警告
+            if "API_LIMIT_402" in error_str or "API_LIMIT_403" in error_str:
+                print(f"\n🛑 撞到 FinMind API 流量上限 ({error_str})！")
+                print(f"💾 存檔點建立！本次排程已成功寫入 {total_inserted} 筆。")
+                print("🏃‍♂️ [微批次架構] 程式將優雅結束 (Graceful Exit)，剩下的交給下一次 GitHub 排程...")
+                conn.close()
+                import sys
+                sys.exit(0)  # 回傳 0 代表正常結束，GitHub 不會報錯，資料庫庫也會順利存檔！
             else:
                 print(f"❌ {stock_id} 處理失敗: {e}")
         
