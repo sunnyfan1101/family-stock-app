@@ -292,10 +292,12 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50):
             if "API_LIMIT_402" in error_str or "API_LIMIT_403" in error_str:
                 print(f"\n🛑 撞到 FinMind API 流量上限 ({error_str})！")
                 print(f"💾 存檔點建立！本次排程已成功寫入 {total_inserted} 筆。")
-                print("🏃‍♂️ [微批次架構] 程式將優雅結束 (Graceful Exit)，剩下的交給下一次 GitHub 排程...")
+                print("🏃‍♂️ [微批次架構] 營收模組提早下班，交接給主程式進行壓縮打包...")
                 conn.close()
-                import sys
-                sys.exit(0)  # 回傳 0 代表正常結束，GitHub 不會報錯，資料庫庫也會順利存檔！
+                
+                # 👇 把 import sys 跟 sys.exit(0) 刪掉，改成這行 👇
+                return total_inserted 
+
             else:
                 print(f"❌ {stock_id} 處理失敗: {e}")
         
