@@ -8,9 +8,18 @@ export PATH="/usr/bin:/bin:/home/sunny/.npm-global/bin:/home/sunny/.local/bin:$P
 cd /home/sunny/family-stock-app
 
 LOG_FILE="/home/sunny/family-stock-app/cron_local.log"
+LOCK_FILE="/tmp/family_stock_local_db_update.lock"
 PYTHON_BIN="/home/sunny/family-stock-app/venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="/usr/bin/python3"
+fi
+
+exec 8>"$LOCK_FILE"
+if ! flock -n 8; then
+    echo "========================================" >> $LOG_FILE
+    echo "⏭️ 股價更新已在執行中，跳過重複啟動 | $(date '+%Y-%m-%d %H:%M:%S')" >> $LOG_FILE
+    echo "" >> $LOG_FILE
+    exit 0
 fi
 
 echo "========================================" >> $LOG_FILE

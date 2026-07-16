@@ -6,8 +6,10 @@ db_health_check.py - validate the local stock database before publishing it.
 import lzma
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -58,6 +60,23 @@ def fetch_one(cursor, sql, params=()):
     return cursor.fetchone()[0]
 
 
+def twse_has_today_data(today):
+    query = urlencode({
+        "date": today.strftime("%Y%m%d"),
+        "type": "ALLBUT0999",
+        "response": "json",
+    })
+    url = f"https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?{query}"
+    try:
+        with urlopen(url, timeout=15) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        print(f"⚠️ 無法確認 TWSE 今日資料狀態，略過今日性硬檢查: {exc}")
+        return False
+
+    return '"stat":"OK"' in body or '"stat": "OK"' in body
+
+
 def check_database():
     if not DB_PATH.exists():
         return fail("找不到 stock_data.db")
@@ -94,12 +113,21 @@ def check_database():
             checks.append(fail("daily_prices 沒有最新日期"))
         else:
             latest_dt = datetime.strptime(latest_date, "%Y-%m-%d").date()
-            age_days = (datetime.now().date() - latest_dt).days
+            now = datetime.now()
+            today = now.date()
+            age_days = (today - latest_dt).days
             checks.append(
                 ok(f"最新股價日 {latest_date}，距今 {age_days} 天")
                 if age_days <= MAX_PRICE_AGE_DAYS
                 else fail(f"股價資料過舊: {latest_date}，距今 {age_days} 天")
             )
+
+            if now.weekday() < 5 and now.time() >= time(16, 0) and twse_has_today_data(today):
+                checks.append(
+                    ok(f"最新股價日已是今日 {latest_date}")
+                    if latest_dt == today
+                    else fail(f"TWSE 今日已有收盤資料，但 DB 最新股價日仍是 {latest_date}")
+                )
 
             latest_day_stocks = fetch_one(
                 cursor,

@@ -289,7 +289,8 @@ def update_stock_data(progress_bar=None, status_text=None):
     # ★ 智慧篩選與快取預載：一次性撈取現有財報，避免被洗成 0
     cursor.execute('''
         SELECT stock_id, eps, pe_ratio, yield_rate, gross_margin,
-               operating_margin, pretax_margin, net_margin, eps_growth, revenue_growth
+               operating_margin, pretax_margin, net_margin, eps_growth, revenue_growth,
+               pb_ratio, beta, market_cap, revenue_streak, capital
         FROM stocks
     ''')
     existing_funds = {}
@@ -298,7 +299,9 @@ def update_stock_data(progress_bar=None, status_text=None):
             'eps': r[1] or 0, 'pe_ratio': r[2] or 0, 'yield_rate': r[3] or 0,
             'gross_margin': r[4] or 0, 'operating_margin': r[5] or 0,
             'pretax_margin': r[6] or 0, 'net_margin': r[7] or 0,
-            'eps_growth': r[8] or 0, 'revenue_growth': r[9] or 0
+            'eps_growth': r[8] or 0, 'revenue_growth': r[9] or 0,
+            'pb_ratio': r[10] or 0, 'beta': r[11] or 0, 'market_cap': r[12] or 0,
+            'revenue_streak': r[13] or 0, 'capital': r[14] or 0
         }
 
     total_to_update = total_stocks
@@ -331,23 +334,8 @@ def update_stock_data(progress_bar=None, status_text=None):
     for i, stock in enumerate(all_stocks):
         stock_id = stock['id']
 
-        # ==========================================
-        # 🛡️ 終極防護網：先猜上市，抓不到秒切上櫃
-        # ==========================================
-        symbol = f"{stock_id}.TW"  # 預設上市車牌
-
-        try:
-            # 去 Yahoo 敲個門，看有沒有資料
-            test_df = yf.download(symbol, period="1d", progress=False)
-
-            # 如果回傳是空的，代表這檔是上櫃股票！
-            if test_df.empty:
-                symbol = f"{stock_id}.TWO"  # 秒切上櫃車牌
-        except Exception:
-            # 💡 終極修正：如果 Yahoo 直接噴 404/400 錯誤，代表 .TW 找不到
-            # 這時候絕對要把車牌換成 .TWO！不能寫 pass！
-            symbol = f"{stock_id}.TWO"
-        # ==========================================
+        # 股票清單已經包含正確上市/上櫃後綴，避免每檔都多打一輪 Yahoo 測試請求。
+        symbol = stock.get("symbol") or (f"{stock_id}.TWO" if stock.get("market") == "otc" else f"{stock_id}.TW")
 
         # ==========================================
         # 🚀 財報加班車「極速通關」機制
@@ -529,20 +517,25 @@ def update_stock_data(progress_bar=None, status_text=None):
             eps_growth_pct = finmind_data.get('eps_growth', 0)
             revenue_growth_pct = finmind_data.get('revenue_growth', 0)
 
-            # 📝 以下次要欄位保留 yfinance 抓取
-            try:
-                info = yf.Ticker(symbol).info
-            except:
-                info = {}
-            pb = info.get('priceToBook', 0) or 0
-            beta = info.get('beta', 0) or 0
-            market_cap = info.get('marketCap', 0) or 0
             revenue_ttm = revenue_growth_pct
-            revenue_streak = calculate_revenue_streak(ticker)
 
-            capital_billion = 0
-            shares = info.get('sharesOutstanding', 0)
-            if shares: capital_billion = shares / 10000000
+            if force_financials or needs_update:
+                try:
+                    info = yf.Ticker(symbol).info
+                except:
+                    info = {}
+                pb = info.get('priceToBook', 0) or 0
+                beta = info.get('beta', 0) or 0
+                market_cap = info.get('marketCap', 0) or 0
+                revenue_streak = calculate_revenue_streak(ticker)
+                shares = info.get('sharesOutstanding', 0)
+                capital_billion = shares / 10000000 if shares else curr_existing.get('capital', 0)
+            else:
+                pb = curr_existing.get('pb_ratio', 0)
+                beta = curr_existing.get('beta', 0)
+                market_cap = curr_existing.get('market_cap', 0)
+                revenue_streak = curr_existing.get('revenue_streak', 0)
+                capital_billion = curr_existing.get('capital', 0)
 
             # --- 寫入資料庫 (stocks) ---
             cursor.execute('''

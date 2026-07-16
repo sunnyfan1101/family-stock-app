@@ -26,7 +26,7 @@ def ensure_database():
 
 def get_connection():
     ensure_database()
-    return sqlite3.connect(DB_NAME)
+    return sqlite3.connect(DB_NAME, timeout=30)
 
 def init_db():
     conn = get_connection()
