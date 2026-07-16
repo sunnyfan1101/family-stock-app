@@ -95,8 +95,37 @@ st.markdown("""
 def get_connection():
     return database.get_connection()
 
+
+FINANCIAL_CLIP_RANGES = {
+    'revenue_growth': (-100, 300),
+    'eps_growth': (-300, 300),
+    'gross_margin': (-100, 100),
+    'operating_margin': (-100, 100),
+    'pretax_margin': (-100, 100),
+    'net_margin': (-100, 100),
+}
+
+
+def clip_financial_outliers(df):
+    for col, (lower, upper) in FINANCIAL_CLIP_RANGES.items():
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').clip(lower, upper)
+    return df
+
+
+def table_exists(conn, table_name):
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    )
+    return cursor.fetchone()[0] > 0
+
+
 def load_data(filters):
     conn = get_connection()
+    use_snapshot = table_exists(conn, "latest_stock_snapshot")
+    price_alias = "s" if use_snapshot else "d"
     
     # 1. 決定位階使用的欄位 (1年 vs 2年)
     # 根據傳入的設定，決定要用哪個欄位來計算 Position
@@ -107,21 +136,36 @@ def load_data(filters):
         col_h = 's.year_high'
         col_l = 's.year_low'
 
-    # 2. SQL 查詢指令 (改用預先計算欄位)
-    base_sql = f"""
-    SELECT 
-        s.stock_id, s.name, s.industry, s.market_type,
-        s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
-        s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
-        s.eps_growth, s.gross_margin, 
-        s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days, s.consolidation_days_20,
-        s.position_1y, s.position_2y, s.bias_20, s.bias_60, s.vol_spike, s.consolidation_log,
-        {col_h} as year_high, {col_l} as year_low,
-        d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
-    FROM stocks s
-    JOIN daily_prices d ON s.stock_id = d.stock_id
-    WHERE d.date = (SELECT MAX(date) FROM daily_prices dp WHERE dp.stock_id = s.stock_id)
-    """
+    # 2. SQL 查詢指令。優先使用預先計算的最新快照，舊 DB 沒有快照時 fallback 到原 JOIN。
+    if use_snapshot:
+        base_sql = f"""
+        SELECT
+            s.stock_id, s.name, s.industry, s.market_type,
+            s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
+            s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
+            s.eps_growth, s.gross_margin,
+            s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days, s.consolidation_days_20,
+            s.position_1y, s.position_2y, s.bias_20, s.bias_60, s.vol_spike, s.consolidation_log,
+            {col_h} as year_high, {col_l} as year_low,
+            s.date, s.close, s.change_pct, s.volume, s.ma_5, s.ma_20, s.ma_60
+        FROM latest_stock_snapshot s
+        WHERE 1 = 1
+        """
+    else:
+        base_sql = f"""
+        SELECT
+            s.stock_id, s.name, s.industry, s.market_type,
+            s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
+            s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
+            s.eps_growth, s.gross_margin,
+            s.operating_margin, s.pretax_margin, s.net_margin, s.consolidation_days, s.consolidation_days_20,
+            s.position_1y, s.position_2y, s.bias_20, s.bias_60, s.vol_spike, s.consolidation_log,
+            {col_h} as year_high, {col_l} as year_low,
+            d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
+        FROM stocks s
+        JOIN daily_prices d ON s.stock_id = d.stock_id
+        WHERE d.date = (SELECT MAX(date) FROM daily_prices dp WHERE dp.stock_id = s.stock_id)
+        """
 
     conditions = []
     params = []
@@ -142,9 +186,9 @@ def load_data(filters):
         ('s.revenue_growth', filters.get('rev_min'), filters.get('rev_max')),
         ('s.capital', filters.get('cap_min'), filters.get('cap_max')),
         ('s.gross_margin', filters.get('gross_min'), filters.get('gross_max')), # ★ 新增這行
-        ('d.close', filters.get('price_min'), filters.get('price_max')),
-        ('d.change_pct', filters.get('change_min'), filters.get('change_max')),
-        ('d.volume', filters.get('vol_min'), filters.get('vol_max')),
+        (f'{price_alias}.close', filters.get('price_min'), filters.get('price_max')),
+        (f'{price_alias}.change_pct', filters.get('change_min'), filters.get('change_max')),
+        (f'{price_alias}.volume', filters.get('vol_min'), filters.get('vol_max')),
         ('s.vol_ma_5', filters.get('vol_ma_min'), filters.get('vol_ma_max')),
         ('s.vol_ma_20', filters.get('vol_ma20_min'), filters.get('vol_ma20_max')),
         ('s.eps_growth', filters.get('eps_growth_min'), filters.get('eps_growth_max')),
@@ -197,6 +241,7 @@ def load_data(filters):
         # 爆量篩選使用預先計算欄位
         if filters.get('vol_spike_min'):
             df = df[df['vol_spike'] >= filters['vol_spike_min']]
+        df = clip_financial_outliers(df)
     except Exception as e:
         st.error(f"資料庫讀取錯誤: {e}")
         df = pd.DataFrame()
@@ -483,6 +528,104 @@ def delete_user_preset(name):
     conn.commit()
     conn.close()
 
+
+def render_family_candidate_table(df, sort_cols):
+    display_cols = [
+        'stock_id', 'name', 'industry', 'close', 'change_pct', 'position',
+        'vol_spike', 'revenue_growth', 'eps_growth', 'yield_rate', 'gross_margin'
+    ]
+    for col in display_cols:
+        if col not in df.columns:
+            df[col] = 0
+
+    table = df.sort_values(sort_cols, ascending=[False] * len(sort_cols)).head(12).copy()
+    table = table[display_cols]
+
+    st.dataframe(
+        table,
+        width='stretch',
+        hide_index=True,
+        column_config={
+            "stock_id": "代號",
+            "name": "名稱",
+            "industry": "產業",
+            "close": st.column_config.NumberColumn("股價", format="%.2f"),
+            "change_pct": st.column_config.NumberColumn("漲跌%", format="%+.2f"),
+            "position": st.column_config.NumberColumn("位階", format="%.2f"),
+            "vol_spike": st.column_config.NumberColumn("爆量", format="%.1f x"),
+            "revenue_growth": st.column_config.NumberColumn("營收成長", format="%+.1f%%"),
+            "eps_growth": st.column_config.NumberColumn("EPS成長", format="%+.1f%%"),
+            "yield_rate": st.column_config.NumberColumn("殖利率", format="%.2f%%"),
+            "gross_margin": st.column_config.NumberColumn("毛利", format="%.1f%%"),
+        },
+    )
+
+
+def render_family_overview():
+    st.title("家庭投資速覽")
+    df = load_data({'period': '1y'})
+
+    if df.empty:
+        st.warning("目前沒有可顯示的股票資料。")
+        return
+
+    numeric_cols = [
+        'close', 'change_pct', 'position_1y', 'vol_spike', 'revenue_growth',
+        'eps_growth', 'yield_rate', 'gross_margin', 'eps'
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    df['position'] = df['position_1y'] if 'position_1y' in df.columns else 0
+    latest_date = df['date'].max() if 'date' in df.columns else "N/A"
+
+    low_growth = df[
+        (df['position'] <= 0.4) &
+        (df['revenue_growth'] > 0) &
+        (df['eps_growth'] > 0) &
+        (df['gross_margin'] > 0)
+    ].copy()
+
+    volume_turning = df[
+        (df['vol_spike'] >= 1.5) &
+        (df['revenue_growth'] > 0) &
+        (df['position'] <= 0.7)
+    ].copy()
+
+    income_quality = df[
+        (df['yield_rate'] >= 3) &
+        (df['eps'] > 0) &
+        (df['gross_margin'] > 0) &
+        (df['revenue_growth'] >= 0)
+    ].copy()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("資料日期", str(latest_date))
+    m2.metric("股票總數", f"{len(df):,}")
+    m3.metric("低位階成長", f"{len(low_growth):,}")
+    m4.metric("爆量轉強", f"{len(volume_turning):,}")
+
+    tab_low, tab_volume, tab_income = st.tabs(["低位階成長", "爆量轉強", "穩定殖利率"])
+
+    with tab_low:
+        if low_growth.empty:
+            st.info("目前沒有符合條件的低位階成長股。")
+        else:
+            render_family_candidate_table(low_growth, ['revenue_growth', 'eps_growth'])
+
+    with tab_volume:
+        if volume_turning.empty:
+            st.info("目前沒有符合條件的爆量轉強股。")
+        else:
+            render_family_candidate_table(volume_turning, ['vol_spike', 'revenue_growth'])
+
+    with tab_income:
+        if income_quality.empty:
+            st.info("目前沒有符合條件的穩定殖利率股。")
+        else:
+            render_family_candidate_table(income_quality, ['yield_rate', 'revenue_growth'])
+
 # ==========================================
 # 3. 主程式
 # ==========================================
@@ -498,7 +641,7 @@ def main():
     
     # 確保頁面記憶功能存在
     if "current_main_page" not in st.session_state:
-        st.session_state.current_main_page = "條件篩選 (Screener)"
+        st.session_state.current_main_page = "家庭速覽 (Overview)"
         
     # --- 左側導航欄 (Dual Mode) ---
     with st.sidebar:
@@ -544,13 +687,17 @@ def main():
         # 模式 A: 功能操作 (只放導航和策略管理)
         # ==========================================
         if sidebar_mode == "功能操作":
+            page_options = ["家庭速覽 (Overview)", "條件篩選 (Screener)", "AI 相似股 (Similarity)"]
+            if st.session_state.current_main_page not in page_options:
+                st.session_state.current_main_page = "家庭速覽 (Overview)"
+
             # 導航選單
             selected_page = option_menu(
                 "功能選單",
-                ["條件篩選 (Screener)", "AI 相似股 (Similarity)"],
-                icons=['funnel', 'robot'],
+                page_options,
+                icons=['speedometer2', 'funnel', 'robot'],
                 menu_icon="cast",
-                default_index=["條件篩選 (Screener)", "AI 相似股 (Similarity)"].index(st.session_state.current_main_page),
+                default_index=page_options.index(st.session_state.current_main_page),
                 styles={"container": {"padding": "5px", "background-color": "#262730"},"icon": {"color": "lime", "font-size": "20px"}}
             )
             st.session_state.current_main_page = selected_page
@@ -814,10 +961,14 @@ def main():
 
         
     # ==========================================
-    # 頁面 1: 條件篩選 (Screener)
+    # 頁面 1: 家庭速覽 (Overview)
+    if st.session_state.current_main_page == "家庭速覽 (Overview)":
+        render_family_overview()
+
+    # 頁面 2: 條件篩選 (Screener)
     # ==========================================
     # --- 條件篩選 (Screener) ---
-    if st.session_state.current_main_page == "條件篩選 (Screener)":
+    elif st.session_state.current_main_page == "條件篩選 (Screener)":
         st.title("🎯 智慧選股儀表板")
         
         conn = get_connection()

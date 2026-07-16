@@ -37,6 +37,15 @@ echo "🚀 執行 fetch_data.py..." >> $LOG_FILE
 FETCH_EXIT=$?
 if [ $FETCH_EXIT -eq 0 ]; then
     echo "✅ fetch_data.py 完成" >> $LOG_FILE
+    echo "🔍 執行 DB 健康檢查..." >> $LOG_FILE
+    "$PYTHON_BIN" db_health_check.py >> $LOG_FILE 2>&1
+    HEALTH_EXIT=$?
+    if [ $HEALTH_EXIT -ne 0 ]; then
+        echo "🛑 DB 健康檢查失敗，取消 GitHub 推送，結束碼: $HEALTH_EXIT" >> $LOG_FILE
+        exit $HEALTH_EXIT
+    fi
+    echo "✅ DB 健康檢查通過" >> $LOG_FILE
+
     echo "☁️ 推送新版資料庫到 GitHub..." >> $LOG_FILE
     /home/sunny/family-stock-app/push_db_to_github.sh >> $LOG_FILE 2>&1
     PUSH_EXIT=$?

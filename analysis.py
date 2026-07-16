@@ -7,6 +7,24 @@ import database
 def get_connection():
     return database.get_connection()
 
+
+FINANCIAL_CLIP_RANGES = {
+    'revenue_growth': (-100, 300),
+    'eps_growth': (-300, 300),
+    'gross_margin': (-100, 100),
+    'operating_margin': (-100, 100),
+    'pretax_margin': (-100, 100),
+    'net_margin': (-100, 100),
+}
+
+
+def clip_financial_outliers(df):
+    for col, (lower, upper) in FINANCIAL_CLIP_RANGES.items():
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').clip(lower, upper)
+    return df
+
+
 # --- 1. 計算所有股票與目標股票的 K 線相關係數 ---
 def get_price_correlation(target_id, days=60):
     conn = get_connection()
@@ -76,6 +94,8 @@ def get_all_stock_features():
     for col in cols: 
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df = clip_financial_outliers(df)
     
     return df
 

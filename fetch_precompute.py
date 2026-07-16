@@ -188,6 +188,65 @@ def sync_revenue_yoy_to_stocks(conn):
     print(f"✅ YOY 同步完成！更新 {updated} 檔，跳過 {skipped} 檔")
 
 
+def refresh_latest_stock_snapshot(conn=None):
+    """
+    建立首頁篩選用快照表，避免 Streamlit 每次查詢都 JOIN 全量 daily_prices。
+    """
+    should_close = False
+    if conn is None:
+        conn = get_connection()
+        should_close = True
+
+    cursor = conn.cursor()
+    print("📸 開始刷新 latest_stock_snapshot...")
+
+    cursor.execute("DROP TABLE IF EXISTS latest_stock_snapshot")
+    cursor.execute('''
+        CREATE TABLE latest_stock_snapshot AS
+        SELECT
+            s.stock_id, s.name, s.industry, s.market_type,
+            s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
+            s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
+            s.eps_growth, s.gross_margin,
+            s.operating_margin, s.pretax_margin, s.net_margin,
+            s.consolidation_days, s.consolidation_days_20,
+            s.position_1y, s.position_2y, s.bias_20, s.bias_60,
+            s.vol_spike, s.consolidation_log,
+            s.year_high, s.year_low, s.year_high_2y, s.year_low_2y,
+            d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
+        FROM stocks s
+        JOIN daily_prices d ON s.stock_id = d.stock_id
+        WHERE d.date = (
+            SELECT MAX(date)
+            FROM daily_prices dp
+            WHERE dp.stock_id = s.stock_id
+        )
+    ''')
+
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_stock_id ON latest_stock_snapshot(stock_id)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_industry ON latest_stock_snapshot(industry)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_position_1y ON latest_stock_snapshot(position_1y)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_position_2y ON latest_stock_snapshot(position_2y)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_revenue_growth ON latest_stock_snapshot(revenue_growth)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_eps_growth ON latest_stock_snapshot(eps_growth)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_gross_margin ON latest_stock_snapshot(gross_margin)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_vol_spike ON latest_stock_snapshot(vol_spike)",
+    ]
+    for sql in indexes:
+        cursor.execute(sql)
+
+    cursor.execute("SELECT COUNT(*) FROM latest_stock_snapshot")
+    snapshot_count = cursor.fetchone()[0]
+    conn.commit()
+
+    if should_close:
+        conn.close()
+
+    print(f"✅ latest_stock_snapshot 刷新完成，共 {snapshot_count} 檔")
+    return snapshot_count
+
+
 def update_precomputed_metrics():
     """
     更新所有股票的預先計算指標
@@ -317,6 +376,7 @@ def update_weekly_ma():
             continue
     
     conn.commit()
+    refresh_latest_stock_snapshot(conn)
     conn.close()
     
     print(f"\n🎉 週線均線更新完成！共更新 {updated}/{total} 檔股票")
