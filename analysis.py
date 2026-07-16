@@ -2,9 +2,10 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from sklearn.preprocessing import StandardScaler
+import database
 
 def get_connection():
-    return sqlite3.connect("stock_data.db")
+    return database.get_connection()
 
 # --- 1. 計算所有股票與目標股票的 K 線相關係數 ---
 def get_price_correlation(target_id, days=60):

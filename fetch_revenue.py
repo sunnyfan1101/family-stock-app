@@ -7,13 +7,14 @@ import pandas as pd
 import sqlite3
 import time
 from datetime import datetime
+import database
 
 FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
 DATASET = "TaiwanStockMonthRevenue"
 
 
 def get_connection():
-    return sqlite3.connect("stock_data.db")
+    return database.get_connection()
 
 
 def fetch_stock_revenue(stock_id, start_date="2024-01-01"):

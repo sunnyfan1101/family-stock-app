@@ -8,21 +8,15 @@ from streamlit_option_menu import option_menu # 務必確認已安裝此套件
 import plotly.express as px # ★ 新增這一行
 import json
 import time
-import lzma # 記得確認有 import lzma
-import shutil
-import os
+import database
 import ai_agent # ★ 新增這行
 
 # --- ★★★ GitHub 版本專屬：啟動時解壓縮資料庫 ★★★ ---
-if not os.path.exists("stock_data.db") and os.path.exists("stock_data.db.xz"):
-    print("正在解壓縮資料庫 (LZMA)...")
-    try:
-        with lzma.open("stock_data.db.xz", "rb") as f_in:
-            with open("stock_data.db", "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        print("解壓縮完成！")
-    except Exception as e:
-        print(f"解壓縮失敗: {e}")
+try:
+    database.ensure_database()
+except Exception as e:
+    st.error(f"資料庫初始化失敗：{e}")
+    st.stop()
 # ----------------------------------------------------
 
 # ==========================================
@@ -99,7 +93,7 @@ st.markdown("""
 # ==========================================
 
 def get_connection():
-    return sqlite3.connect("stock_data.db")
+    return database.get_connection()
 
 def load_data(filters):
     conn = get_connection()

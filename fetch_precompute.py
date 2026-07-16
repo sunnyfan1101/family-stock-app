@@ -5,9 +5,10 @@ import sqlite3
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import database
 
 def get_connection():
-    return sqlite3.connect("stock_data.db")
+    return database.get_connection()
 
 def precompute_position(stock_id, conn):
     """

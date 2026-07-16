@@ -5,11 +5,19 @@ import database
 from groq import Groq
 import os
 
+
+def get_secret(name):
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
 # 1. 設定 Groq Client
 def get_groq_client():
     try:
         # 優先讀取 secrets，如果沒有則讀取環境變數 (本地測試用)
-        api_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+        api_key = get_secret("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
         if not api_key:
             st.error("❌ 找不到 Groq API Key，請確認 .streamlit/secrets.toml 設定。")
             return None
@@ -24,9 +32,7 @@ def configure_genai():
     """
     相容函式：檢查 Groq API Key 是否存在
     """
-    if "GROQ_API_KEY" in st.secrets:
-        return True
-    return False
+    return bool(get_secret("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY"))
 
 # 2. 建立股票快取表
 @st.cache_data

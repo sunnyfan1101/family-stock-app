@@ -1,9 +1,31 @@
 # database.py
+import lzma
+import shutil
 import sqlite3
+from pathlib import Path
 
-DB_NAME = "stock_data.db"
+PROJECT_DIR = Path(__file__).resolve().parent
+DB_PATH = PROJECT_DIR / "stock_data.db"
+DB_XZ_PATH = PROJECT_DIR / "stock_data.db.xz"
+DB_NAME = str(DB_PATH)
+
+
+def ensure_database():
+    """Restore the runtime SQLite DB from the GitHub-friendly compressed copy."""
+    if DB_PATH.exists():
+        return
+
+    if not DB_XZ_PATH.exists():
+        raise FileNotFoundError(f"找不到資料庫：{DB_PATH} 或 {DB_XZ_PATH}")
+
+    print("正在解壓縮資料庫 (LZMA)...")
+    with lzma.open(DB_XZ_PATH, "rb") as f_in:
+        with DB_PATH.open("wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    print("解壓縮完成！")
 
 def get_connection():
+    ensure_database()
     return sqlite3.connect(DB_NAME)
 
 def init_db():

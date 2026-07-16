@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+stock_data.db
+.env
+*.log
+*_token.txt
+finmind_done.txt
+news_cache.txt
+EOF

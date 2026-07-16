@@ -10,3 +10,4 @@ openpyxl
 matplotlib
 google-generativeai
 groq
+jinja2
