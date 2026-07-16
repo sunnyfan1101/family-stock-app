@@ -6,11 +6,34 @@ import requests
 import pandas as pd
 import sqlite3
 import time
+import signal
+from contextlib import contextmanager
 from datetime import datetime
 import database
 
 FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
 DATASET = "TaiwanStockMonthRevenue"
+REQUEST_TIMEOUT_SECONDS = 12
+STOCK_TIMEOUT_SECONDS = 45
+
+
+class RevenueTimeout(Exception):
+    pass
+
+
+@contextmanager
+def revenue_timeout(seconds, stock_id):
+    def _handle_timeout(signum, frame):
+        raise RevenueTimeout(f"REVENUE_TIMEOUT_{stock_id}_{seconds}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def get_connection():
@@ -28,7 +51,7 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01"):
     }
     
     try:
-        response = requests.get(FINMIND_API_URL, params=params, timeout=30)
+        response = requests.get(FINMIND_API_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         if response.status_code == 200:
             data = response.json()
             if data.get("data"):
@@ -48,6 +71,8 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01"):
         else:
             print(f"❌ {stock_id} API 錯誤 (狀態碼 {response.status_code})")
             return pd.DataFrame()
+    except RevenueTimeout:
+        raise
     except Exception as e:
         # 如果是我們自己拋出的 API_LIMIT 錯誤，直接往上傳遞，不要吃掉！
         if "API_LIMIT" in str(e):
@@ -229,7 +254,7 @@ def get_expected_latest_month():
     return expected_year, expected_month
 
 
-def update_all_stocks(start_date="2024-01-01", batch_size=50):
+def update_all_stocks(start_date="2024-01-01", batch_size=50, per_stock_timeout=STOCK_TIMEOUT_SECONDS):
     """
     更新所有股票月營收
     智能過濾：排除 ETF、跳過已有資料、402/403 休眠機制
@@ -285,7 +310,8 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50):
             print(f"(跳過檢查失敗: {e}) ", end="")
         
         try:
-            count = update_monthly_revenue_for_stock(stock_id, start_date)
+            with revenue_timeout(per_stock_timeout, stock_id):
+                count = update_monthly_revenue_for_stock(stock_id, start_date)
             total_inserted += count
         except Exception as e:
             error_str = str(e)
@@ -299,6 +325,8 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50):
                 # 👇 把 import sys 跟 sys.exit(0) 刪掉，改成這行 👇
                 return total_inserted 
 
+            elif "REVENUE_TIMEOUT" in error_str:
+                print(f"⏱️ {stock_id} 月營收抓取超過 {per_stock_timeout} 秒，跳過避免拖死主更新")
             else:
                 print(f"❌ {stock_id} 處理失敗: {e}")
         
