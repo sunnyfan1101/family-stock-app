@@ -107,9 +107,10 @@ FINANCIAL_CLIP_RANGES = {
 
 
 def clip_financial_outliers(df):
-    for col, (lower, upper) in FINANCIAL_CLIP_RANGES.items():
+    # Display raw values; model-specific preprocessing belongs in analysis.py.
+    for col in FINANCIAL_CLIP_RANGES:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').clip(lower, upper)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
 
@@ -1691,4 +1692,5 @@ def main():
     #             st.error(f"更新發生錯誤: {e}")
 
 if __name__ == "__main__":
-    main()
+    from web_ui import render_app
+    render_app(load_data, load_stock_history, plot_candlestick, main, database.DB_PATH)

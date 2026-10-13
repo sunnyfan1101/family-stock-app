@@ -1,0 +1,221 @@
+"""Web-only workspace. No report, scheduler, or database writes."""
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+
+PRESETS = {
+    '不限條件': {},
+    '營收成長': {'revenue_growth': 20},
+    '股息觀察': {'yield_rate': 3},
+    '量能放大': {'vol_spike': 1.5},
+}
+LABELS = {'revenue_growth': '營收成長率 %', 'yield_rate': '殖利率 %', 'vol_spike': '量能倍數'}
+
+
+def number(value, suffix='', signed=False):
+    if value is None or pd.isna(value):
+        return '未取得'
+    return f'{value:+.2f}{suffix}' if signed else f'{value:,.2f}{suffix}'
+
+
+def filter_stocks(df, settings):
+    result = df.copy()
+    if settings.get('industry'):
+        result = result[result['industry'].isin(settings['industry'])]
+    for column, minimum in PRESETS[settings.get('preset', '不限條件')].items():
+        result = result[pd.to_numeric(result[column], errors='coerce') >= minimum]
+    if settings.get('max_price', 0) > 0:
+        result = result[pd.to_numeric(result['close'], errors='coerce') <= settings['max_price']]
+    if settings.get('latest_only'):
+        result = result[result['date'] == df['date'].max()]
+    return result
+
+
+def open_stock(stock_id):
+    st.session_state.web_stock = str(stock_id)
+    recent = st.session_state.get('web_recent', [])
+    st.session_state.web_recent = [str(stock_id)] + [x for x in recent if x != str(stock_id)][:7]
+    st.session_state.web_page = '個股詳情'
+
+
+def render_detail(df, history, chart):
+    stock_id = st.session_state.get('web_stock')
+    selected = df[df['stock_id'] == stock_id]
+    if selected.empty:
+        st.info('請先從上方搜尋股票，或在探索選股點選「查看個股」。')
+        return
+    row = selected.iloc[0]
+    st.title(f"{stock_id} · {row['name']}")
+    st.caption(f"{row['industry']} · 行情日期 {row['date']} · 日線資料，非即時報價")
+    if row['date'] != df['date'].max():
+        st.warning('此股票行情早於資料庫最新交易日，可能涉及停牌或資料缺漏，請先確認。')
+    a, b = st.columns(2)
+    a.metric('收盤價', number(row['close']))
+    change = row['change_pct']
+    sign = '' if pd.isna(change) or change == 0 else (' 🔴' if change > 0 else ' 🟢')
+    b.metric('漲跌幅', number(change, '%', signed=True) + sign)
+    span = st.radio('走勢範圍', ['近 3 月', '近半年', '近 1 年', '近 3 年'], horizontal=True, key='web_span')
+    with st.spinner('讀取個股走勢…'):
+        prices = history(stock_id)
+    if prices.empty:
+        st.info('尚未取得歷史行情。')
+    else:
+        days = {'近 3 月': 90, '近半年': 183, '近 1 年': 366, '近 3 年': 1096}[span]
+        dates = pd.to_datetime(prices['date'])
+        prices = prices[dates >= dates.max() - pd.Timedelta(days=days)].copy()
+        figure = chart(prices, stock_id, row['name'])
+        # Respect the chosen range instead of the legacy chart's 120-bar default.
+        figure.update_xaxes(range=[pd.to_datetime(prices['date']).min(), pd.to_datetime(prices['date']).max() + pd.Timedelta(days=3)])
+        figure.update_layout(height=440, margin=dict(l=10, r=10, t=40, b=10))
+        figure.update_yaxes(autorange=True, row=2, col=1)
+        st.plotly_chart(figure, width='stretch')
+    st.subheader('基本面摘要')
+    groups = st.tabs(['成長與獲利', '估值與股息', '量價位置'])
+    fields = [
+        [('revenue_growth', '營收成長率', '%'), ('eps_growth', 'EPS 成長率', '%'), ('gross_margin', '毛利率', '%'), ('eps', 'EPS', ' 元')],
+        [('pe_ratio', '本益比', ' 倍'), ('pb_ratio', '股價淨值比', ' 倍'), ('yield_rate', '殖利率', '%')],
+        [('vol_spike', '量能倍數', ' 倍'), ('position_1y', '近一年位階（0–1）', ''), ('volume', '成交量（股）', '')],
+    ]
+    for tab, group in zip(groups, fields):
+        with tab:
+            for field, label, unit in group:
+                st.write(f'**{label}**　{number(row.get(field), unit)}')
+    st.caption('基本面欄位不一定與行情同日更新；上方日期僅代表行情。未取得的值不視為 0。')
+    st.subheader('閱讀提醒')
+    notes = []
+    if pd.notna(row.get('eps')) and row['eps'] <= 0:
+        notes.append('EPS 非正值，不能只靠低本益比判斷便宜。')
+    if pd.notna(row.get('vol_spike')) and row['vol_spike'] >= 1.5:
+        notes.append('量能達均量 1.5 倍以上；放量本身不代表後續一定上漲。')
+    if pd.notna(row.get('position_1y')) and row['position_1y'] >= .8:
+        notes.append('股價接近近一年區間高位，留意波動與追價風險。')
+    for note in notes:
+        st.write('• ' + note)
+    st.caption('以上是資料條件提示，不是買賣建議；沒有觸發提示也不代表沒有風險。')
+
+
+def render_explore(df):
+    st.title('探索選股')
+    st.caption('選擇範本與基本條件，按「套用篩選」後更新結果。完整條件仍可在進階工具使用。')
+    with st.form('web_filters'):
+        preset = st.selectbox('篩選範本', list(PRESETS), key='web_preset')
+        industries = st.multiselect('產業（不選即不限）', sorted(df['industry'].dropna().unique()), key='web_industry')
+        with st.expander('更多條件'):
+            max_price = st.number_input('最高股價（0 代表不限）', min_value=0.0, value=0.0, key='web_max_price')
+            latest_only = st.checkbox('僅顯示資料庫最新行情日的股票', value=True, key='web_latest')
+        apply = st.form_submit_button('套用篩選', type='primary')
+        reset = st.form_submit_button('清除篩選')
+    if reset:
+        for key in ['web_preset', 'web_industry', 'web_max_price', 'web_latest', 'web_applied']:
+            st.session_state.pop(key, None)
+        st.rerun()
+    if apply or 'web_applied' not in st.session_state:
+        st.session_state.web_applied = dict(preset=preset, industry=industries, max_price=max_price, latest_only=latest_only)
+    settings = st.session_state.web_applied
+    conditions = [f'{LABELS[k]} ≥ {v}' for k, v in PRESETS[settings['preset']].items()]
+    if settings['industry']:
+        conditions.append('產業：' + '、'.join(settings['industry']))
+    if settings['max_price']:
+        conditions.append(f"股價 ≤ {settings['max_price']:g}")
+    if settings['latest_only']:
+        conditions.append(f"行情日 {df['date'].max()}")
+    st.caption('已套用：' + ('；'.join(conditions) or '不限條件'))
+    result = filter_stocks(df, settings)
+    st.subheader(f'符合 {len(result):,} 檔')
+    if result.empty:
+        st.info('沒有符合的股票。可取消產業限制、提高價格上限，或切換為「不限條件」。')
+        return
+    sort = st.selectbox('排序方式', ['代號', '營收成長率', '殖利率', '量能倍數'], key='web_sort')
+    sort_col = {'代號': 'stock_id', '營收成長率': 'revenue_growth', '殖利率': 'yield_rate', '量能倍數': 'vol_spike'}[sort]
+    result = result.sort_values(sort_col, ascending=sort == '代號', na_position='last')
+    compact = st.toggle('精簡卡片（適合手機）', value=False, key='web_compact')
+    ids = result['stock_id'].tolist()
+    names = result.set_index('stock_id')['name'].to_dict()
+    selected = st.selectbox('查看篩選結果中的股票', ids, format_func=lambda x: f'{x} {names[x]}', index=None, key='web_result_stock')
+    st.button('查看個股', disabled=selected is None, on_click=open_stock, args=(selected,), key='web_result_open')
+    if compact:
+        page = st.selectbox('結果頁', range(1, (len(result) + 11) // 12 + 1))
+        for _, row in result.iloc[(page-1)*12:page*12].iterrows():
+            with st.container(border=True):
+                st.write(f"**{row['stock_id']} {row['name']}** · {row['industry']}")
+                st.write(f"收盤 {number(row['close'])} ｜ 漲跌 {number(row['change_pct'], '%', True)}")
+                st.caption(f"行情日 {row['date']}")
+                st.button('查看個股', key=f"card_{row['stock_id']}", on_click=open_stock, args=(row['stock_id'],))
+    else:
+        columns = ['stock_id', 'name', 'close', 'change_pct', 'date', 'revenue_growth', 'yield_rate', 'vol_spike']
+        st.dataframe(result[columns], hide_index=True, width='stretch', column_config={
+            'stock_id': '代號', 'name': '名稱', 'date': '行情日期',
+            'close': st.column_config.NumberColumn('收盤價', format='%.2f'),
+            'change_pct': st.column_config.NumberColumn('漲跌 %', format='%+.2f'),
+            'revenue_growth': st.column_config.NumberColumn('營收成長 %', format='%+.2f'),
+            'yield_rate': st.column_config.NumberColumn('殖利率 %', format='%.2f'),
+            'vol_spike': st.column_config.NumberColumn('量能倍數', format='%.2f'),
+        })
+        st.caption('空白代表未取得；篩選條件只是研究入口，不是獲利保證。')
+
+
+def render_app(load_data, load_history, chart, legacy, db_path):
+    st.markdown('''<style>
+    div[data-testid="stMetricValue"] {color: inherit; font-size: 26px !important;}
+    @media (max-width: 768px) {
+      .block-container {padding: 1rem;}
+      [data-testid="stSidebar"] {min-width: 0 !important; max-width: 90vw !important;}
+    }
+    </style>''', unsafe_allow_html=True)
+    if st.sidebar.toggle('進階工具（原版完整介面）', key='web_legacy'):
+        st.sidebar.caption('保留完整篩選、相似股票與 AI 顧問；切換開關可回新版。')
+        legacy()
+        return
+
+    # File version is part of the cache key; no stale cache after snapshot replacement.
+    path = Path(db_path)
+    stat = path.stat()
+    wal = Path(str(path) + '-wal')
+    wal_version = (wal.stat().st_mtime_ns, wal.stat().st_size) if wal.exists() else (0, 0)
+    version = (str(path), stat.st_mtime_ns, stat.st_size, wal_version)
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def snapshot(version):
+        return load_data({'period': '1y'})
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def history(stock_id, version):
+        return load_history(stock_id)
+
+    with st.spinner('載入行情快照…'):
+        df = snapshot(version)
+    if df.empty:
+        st.warning('尚無可讀的股票資料。請確認資料更新狀態；此頁不會自行啟動更新。')
+        return
+    df = df.copy()
+    df['stock_id'] = df['stock_id'].astype(str)
+    df = df.sort_values('stock_id')
+    latest = df['date'].max()
+    current = int((df['date'] == latest).sum())
+    st.caption(f'日線行情 · 最新資料日 {latest} · {current:,} / {len(df):,} 檔同日 · 非即時報價')
+    names = df.set_index('stock_id')['name'].to_dict()
+    target = st.selectbox('搜尋股票：輸入代號或名稱', df['stock_id'].tolist(), index=None,
+                          format_func=lambda x: f'{x} {names[x]}', key='web_search', placeholder='例如 2330 或 台積電')
+    st.button('開啟個股詳情', type='primary', disabled=target is None, on_click=open_stock, args=(target,))
+    page = st.radio('主要功能', ['首頁', '探索選股', '個股詳情'], horizontal=True, key='web_page')
+    if page == '個股詳情':
+        render_detail(df, lambda sid: history(sid, version), chart)
+    elif page == '探索選股':
+        render_explore(df)
+    else:
+        st.title('投資研究工作台')
+        st.write('搜尋股票查看走勢與基本面，或進入探索選股縮小研究範圍。')
+        st.button('開始探索選股', on_click=lambda: st.session_state.update(web_page='探索選股'))
+        st.subheader('最近查看')
+        recent = [sid for sid in st.session_state.get('web_recent', []) if sid in names]
+        if not recent:
+            st.info('還沒有查看紀錄。從上方搜尋一檔股票開始。')
+        for sid in recent:
+            st.button(f'{sid} {names[sid]}', key=f'recent_{sid}', on_click=open_stock, args=(sid,))
+        st.caption('最近查看僅保留於本次連線。永久觀察清單將於下一階段提供。')
+        with st.expander('資料狀態與使用說明'):
+            st.write(f'{len(df)-current:,} 檔行情早於最新資料日；可能包含停牌或缺漏，不等於全部更新失敗。')
+            st.write('盤中與休市時，最新完整日線通常是上一個交易日。基本面更新日期可能不同。')
+            st.write('數值保留原始資料，不截斷極端成長率；資料源原本的 0 仍會保留。')
