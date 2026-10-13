@@ -40,6 +40,15 @@ class DisplayTests(unittest.TestCase):
         result = filter_stocks(df, dict(preset='不限條件', revenue_growth_min=0, latest_only=False))
         self.assertEqual(result.stock_id.tolist(), ['1', '3'])
 
+    def test_position_range_filters_both_sides(self):
+        df = pd.DataFrame([
+            dict(stock_id='low', industry='科技', date='2026-10-12', close=10, position_1y=.1),
+            dict(stock_id='mid', industry='科技', date='2026-10-12', close=10, position_1y=.3),
+            dict(stock_id='high', industry='科技', date='2026-10-12', close=10, position_1y=.8),
+        ])
+        result = filter_stocks(df, dict(preset='不限條件', position_1y_min=.2, position_1y_max=.4, latest_only=False))
+        self.assertEqual(result.stock_id.tolist(), ['mid'])
+
 
 class NavigationTests(unittest.TestCase):
     def setUp(self):
@@ -76,6 +85,26 @@ class NavigationTests(unittest.TestCase):
         card.click().run()
         self.assert_clean()
         self.assertIn(stock_id, self.at.title[0].value)
+
+    def test_research_state_survives_detail_and_reset_clears_conditions(self):
+        self.at.radio(key='web_page').set_value('探索選股').run()
+        self.at.checkbox(key='web_enable_revenue_growth').check()
+        self.at.number_input(key='web_min_revenue_growth').set_value(20)
+        self.at.button(key='FormSubmitter:web_filters-套用篩選').click().run()
+        self.at.selectbox(key='web_sort').select('殖利率').run()
+        self.at.toggle(key='web_compact').set_value(True).run()
+        self.at.selectbox(key='web_result_page').select(2).run()
+        next(b for b in self.at.button if b.key and b.key.startswith('card_')).click().run()
+        self.at.button(key='web_back_explore').click().run()
+        self.assert_clean()
+        self.assertEqual(self.at.selectbox(key='web_sort').value, '殖利率')
+        self.assertTrue(self.at.toggle(key='web_compact').value)
+        self.assertTrue(self.at.checkbox(key='web_enable_revenue_growth').value)
+        self.assertEqual(self.at.session_state['web_applied']['revenue_growth_min'], 20)
+        self.at.button(key='FormSubmitter:web_filters-清除篩選').click().run()
+        self.assert_clean()
+        self.assertFalse(self.at.checkbox(key='web_enable_revenue_growth').value)
+        self.assertIsNone(self.at.session_state['web_applied']['revenue_growth_min'])
 
     def test_legacy_entry_and_return(self):
         self.at.toggle(key='web_legacy').set_value(True).run()

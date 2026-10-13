@@ -19,6 +19,27 @@ LABELS = {
     'vol_spike': '量能倍數',
 }
 
+RESEARCH_KEYS = [
+    'web_preset', 'web_industry', 'web_max_price', 'web_latest',
+    'web_enable_revenue_growth', 'web_min_revenue_growth',
+    'web_enable_eps_growth', 'web_min_eps_growth',
+    'web_enable_yield_rate', 'web_min_yield_rate',
+    'web_enable_position_1y', 'web_min_position_1y', 'web_max_position_1y',
+    'web_enable_vol_spike', 'web_min_vol_spike',
+    'web_sort', 'web_compact', 'web_result_page', 'web_result_stock',
+]
+
+RESEARCH_DEFAULTS = {
+    'web_preset': '不限條件', 'web_industry': [], 'web_max_price': 0.0,
+    'web_latest': True, 'web_enable_revenue_growth': False, 'web_min_revenue_growth': 0.0,
+    'web_enable_eps_growth': False, 'web_min_eps_growth': 0.0,
+    'web_enable_yield_rate': False, 'web_min_yield_rate': 0.0,
+    'web_enable_position_1y': False, 'web_min_position_1y': 0.0,
+    'web_max_position_1y': 1.0, 'web_enable_vol_spike': False, 'web_min_vol_spike': 1.0,
+    'web_sort': '代號', 'web_compact': False, 'web_result_page': 1,
+    'web_result_stock': None,
+}
+
 
 def number(value, suffix='', signed=False):
     if value is None or pd.isna(value):
@@ -49,6 +70,7 @@ def filter_stocks(df, settings):
 def open_stock(stock_id):
     if stock_id is None:
         return
+    capture_research_state()
     st.session_state.web_stock = str(stock_id)
     recent = st.session_state.get('web_recent', [])
     st.session_state.web_recent = [str(stock_id)] + [x for x in recent if x != str(stock_id)][:7]
@@ -60,11 +82,32 @@ def open_stock(stock_id):
 
 
 def return_to_explore():
+    restore_research_state()
     st.session_state.web_page = '探索選股'
     try:
         st.query_params.clear()
     except Exception:
         pass
+
+
+def capture_research_state():
+    st.session_state.web_research_state = {
+        key: st.session_state[key]
+        for key in RESEARCH_KEYS
+        if key in st.session_state
+    }
+
+
+def restore_research_state():
+    saved = st.session_state.get('web_research_state', {})
+    for key in RESEARCH_KEYS:
+        if key in saved:
+            st.session_state[key] = saved[key]
+
+
+def clear_research_state():
+    st.session_state.web_reset_requested = True
+    st.session_state.pop('web_applied', None)
 
 
 def selection_reasons(row, settings):
@@ -148,6 +191,12 @@ def render_detail(df, history, chart):
 def render_explore(df):
     st.title('探索選股')
     st.caption('選擇範本與基本條件，按「套用篩選」後更新結果。完整條件仍可在進階工具使用。')
+    if st.session_state.pop('web_reset_requested', False):
+        for key, default in RESEARCH_DEFAULTS.items():
+            st.session_state[key] = default.copy() if isinstance(default, list) else default
+        st.session_state.web_research_state = {}
+    else:
+        restore_research_state()
     with st.form('web_filters'):
         preset = st.selectbox('篩選範本', list(PRESETS), key='web_preset')
         industries = st.multiselect('產業（不選即不限）', sorted(df['industry'].dropna().unique()), key='web_industry')
@@ -159,19 +208,22 @@ def render_explore(df):
                 ('revenue_growth', '營收成長率下限', -100.0, 300.0, 0.0),
                 ('eps_growth', 'EPS 成長率下限', -300.0, 300.0, 0.0),
                 ('yield_rate', '殖利率下限', -100.0, 100.0, 0.0),
-                ('position_1y', '近一年位階下限', 0.0, 1.0, 0.0),
                 ('vol_spike', '量能倍數下限', 0.0, 100.0, 1.0),
             ]
             for column, label, low, high, default in numeric_specs:
                 enabled = st.checkbox(f'啟用：{label}', key=f'web_enable_{column}')
                 value = st.number_input(label, min_value=low, max_value=high, value=default, step=0.1, key=f'web_min_{column}')
                 custom[f'{column}_min'] = value if enabled else None
+            enabled = st.checkbox('啟用：近一年位階範圍', key='web_enable_position_1y')
+            position_min = st.number_input('近一年位階下限', min_value=0.0, max_value=1.0, value=0.0, step=0.05, key='web_min_position_1y')
+            position_max = st.number_input('近一年位階上限', min_value=0.0, max_value=1.0, value=1.0, step=0.05, key='web_max_position_1y')
+            custom['position_1y_min'] = position_min if enabled else None
+            custom['position_1y_max'] = position_max if enabled else None
             latest_only = st.checkbox('僅顯示資料庫最新行情日的股票', value=True, key='web_latest')
         apply = st.form_submit_button('套用篩選', type='primary')
         reset = st.form_submit_button('清除篩選')
     if reset:
-        for key in ['web_preset', 'web_industry', 'web_max_price', 'web_latest', 'web_applied']:
-            st.session_state.pop(key, None)
+        clear_research_state()
         st.rerun()
     if apply or 'web_applied' not in st.session_state:
         st.session_state.web_applied = dict(preset=preset, industry=industries, max_price=max_price, latest_only=latest_only, **custom)
@@ -184,6 +236,8 @@ def render_explore(df):
     for column in ('revenue_growth', 'eps_growth', 'yield_rate', 'position_1y', 'vol_spike'):
         if settings.get(f'{column}_min') is not None:
             conditions.append(f"{LABELS[column]} ≥ {settings[f'{column}_min']:g}")
+        if settings.get(f'{column}_max') is not None:
+            conditions.append(f"{LABELS[column]} ≤ {settings[f'{column}_max']:g}")
     if settings['latest_only']:
         conditions.append(f"行情日 {df['date'].max()}")
     st.caption('已套用：' + ('；'.join(conditions) or '不限條件'))
