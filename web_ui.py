@@ -11,7 +11,13 @@ PRESETS = {
     '股息觀察': {'yield_rate': 3},
     '量能放大': {'vol_spike': 1.5},
 }
-LABELS = {'revenue_growth': '營收成長率 %', 'yield_rate': '殖利率 %', 'vol_spike': '量能倍數'}
+LABELS = {
+    'revenue_growth': '營收成長率 %',
+    'eps_growth': 'EPS 成長率 %',
+    'yield_rate': '殖利率 %',
+    'position_1y': '近一年位階',
+    'vol_spike': '量能倍數',
+}
 
 
 def number(value, suffix='', signed=False):
@@ -26,6 +32,13 @@ def filter_stocks(df, settings):
         result = result[result['industry'].isin(settings['industry'])]
     for column, minimum in PRESETS[settings.get('preset', '不限條件')].items():
         result = result[pd.to_numeric(result[column], errors='coerce') >= minimum]
+    for column in ('revenue_growth', 'eps_growth', 'yield_rate', 'position_1y', 'vol_spike'):
+        minimum = settings.get(f'{column}_min')
+        maximum = settings.get(f'{column}_max')
+        if minimum is not None:
+            result = result[pd.to_numeric(result[column], errors='coerce') >= minimum]
+        if maximum is not None:
+            result = result[pd.to_numeric(result[column], errors='coerce') <= maximum]
     if settings.get('max_price', 0) > 0:
         result = result[pd.to_numeric(result['close'], errors='coerce') <= settings['max_price']]
     if settings.get('latest_only'):
@@ -34,10 +47,45 @@ def filter_stocks(df, settings):
 
 
 def open_stock(stock_id):
+    if stock_id is None:
+        return
     st.session_state.web_stock = str(stock_id)
     recent = st.session_state.get('web_recent', [])
     st.session_state.web_recent = [str(stock_id)] + [x for x in recent if x != str(stock_id)][:7]
     st.session_state.web_page = '個股詳情'
+    try:
+        st.query_params['stock'] = str(stock_id)
+    except Exception:
+        pass
+
+
+def return_to_explore():
+    st.session_state.web_page = '探索選股'
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+
+def selection_reasons(row, settings):
+    reasons = []
+    for column, minimum in PRESETS[settings.get('preset', '不限條件')].items():
+        value = pd.to_numeric(row.get(column), errors='coerce')
+        if pd.notna(value):
+            reasons.append(f'{LABELS[column]} {value:.2f} ≥ {minimum:g}')
+    for column in ('revenue_growth', 'eps_growth', 'yield_rate', 'position_1y', 'vol_spike'):
+        value = pd.to_numeric(row.get(column), errors='coerce')
+        minimum = settings.get(f'{column}_min')
+        maximum = settings.get(f'{column}_max')
+        if minimum is not None:
+            reasons.append(f'{LABELS[column]} {value:.2f} ≥ {minimum:g}' if pd.notna(value) else f'{LABELS[column]} 未取得（不符合）')
+        if maximum is not None:
+            reasons.append(f'{LABELS[column]} {value:.2f} ≤ {maximum:g}' if pd.notna(value) else f'{LABELS[column]} 未取得（不符合）')
+    if settings.get('industry'):
+        reasons.append('產業：' + str(row.get('industry', '未取得')))
+    if settings.get('latest_only'):
+        reasons.append(f"行情日：{row.get('date', '未取得')}")
+    return reasons or ['未套用額外條件']
 
 
 def render_detail(df, history, chart):
@@ -47,6 +95,7 @@ def render_detail(df, history, chart):
         st.info('請先從上方搜尋股票，或在探索選股點選「查看個股」。')
         return
     row = selected.iloc[0]
+    st.button('← 返回探索選股', on_click=return_to_explore, key='web_back_explore')
     st.title(f"{stock_id} · {row['name']}")
     st.caption(f"{row['industry']} · 行情日期 {row['date']} · 日線資料，非即時報價")
     if row['date'] != df['date'].max():
@@ -104,6 +153,19 @@ def render_explore(df):
         industries = st.multiselect('產業（不選即不限）', sorted(df['industry'].dropna().unique()), key='web_industry')
         with st.expander('更多條件'):
             max_price = st.number_input('最高股價（0 代表不限）', min_value=0.0, value=0.0, key='web_max_price')
+            st.caption('下列條件需勾選才會生效；數值 0 是有效門檻，不代表不限。')
+            custom = {}
+            numeric_specs = [
+                ('revenue_growth', '營收成長率下限', -100.0, 300.0, 0.0),
+                ('eps_growth', 'EPS 成長率下限', -300.0, 300.0, 0.0),
+                ('yield_rate', '殖利率下限', -100.0, 100.0, 0.0),
+                ('position_1y', '近一年位階下限', 0.0, 1.0, 0.0),
+                ('vol_spike', '量能倍數下限', 0.0, 100.0, 1.0),
+            ]
+            for column, label, low, high, default in numeric_specs:
+                enabled = st.checkbox(f'啟用：{label}', key=f'web_enable_{column}')
+                value = st.number_input(label, min_value=low, max_value=high, value=default, step=0.1, key=f'web_min_{column}')
+                custom[f'{column}_min'] = value if enabled else None
             latest_only = st.checkbox('僅顯示資料庫最新行情日的股票', value=True, key='web_latest')
         apply = st.form_submit_button('套用篩選', type='primary')
         reset = st.form_submit_button('清除篩選')
@@ -112,13 +174,16 @@ def render_explore(df):
             st.session_state.pop(key, None)
         st.rerun()
     if apply or 'web_applied' not in st.session_state:
-        st.session_state.web_applied = dict(preset=preset, industry=industries, max_price=max_price, latest_only=latest_only)
+        st.session_state.web_applied = dict(preset=preset, industry=industries, max_price=max_price, latest_only=latest_only, **custom)
     settings = st.session_state.web_applied
     conditions = [f'{LABELS[k]} ≥ {v}' for k, v in PRESETS[settings['preset']].items()]
     if settings['industry']:
         conditions.append('產業：' + '、'.join(settings['industry']))
     if settings['max_price']:
         conditions.append(f"股價 ≤ {settings['max_price']:g}")
+    for column in ('revenue_growth', 'eps_growth', 'yield_rate', 'position_1y', 'vol_spike'):
+        if settings.get(f'{column}_min') is not None:
+            conditions.append(f"{LABELS[column]} ≥ {settings[f'{column}_min']:g}")
     if settings['latest_only']:
         conditions.append(f"行情日 {df['date'].max()}")
     st.caption('已套用：' + ('；'.join(conditions) or '不限條件'))
@@ -135,13 +200,21 @@ def render_explore(df):
     names = result.set_index('stock_id')['name'].to_dict()
     selected = st.selectbox('查看篩選結果中的股票', ids, format_func=lambda x: f'{x} {names[x]}', index=None, key='web_result_stock')
     st.button('查看個股', disabled=selected is None, on_click=open_stock, args=(selected,), key='web_result_open')
+    if selected is not None:
+        selected_row = result[result['stock_id'] == selected].iloc[0]
+        with st.expander(f'為什麼 {selected} 符合目前條件', expanded=True):
+            for reason in selection_reasons(selected_row, settings):
+                st.write('• ' + reason)
     if compact:
-        page = st.selectbox('結果頁', range(1, (len(result) + 11) // 12 + 1))
+        page = st.selectbox('結果頁', range(1, (len(result) + 11) // 12 + 1), key='web_result_page')
         for _, row in result.iloc[(page-1)*12:page*12].iterrows():
             with st.container(border=True):
                 st.write(f"**{row['stock_id']} {row['name']}** · {row['industry']}")
                 st.write(f"收盤 {number(row['close'])} ｜ 漲跌 {number(row['change_pct'], '%', True)}")
                 st.caption(f"行情日 {row['date']}")
+                with st.expander('符合條件'):
+                    for reason in selection_reasons(row, settings):
+                        st.write('• ' + reason)
                 st.button('查看個股', key=f"card_{row['stock_id']}", on_click=open_stock, args=(row['stock_id'],))
     else:
         columns = ['stock_id', 'name', 'close', 'change_pct', 'date', 'revenue_growth', 'yield_rate', 'vol_spike']
@@ -192,6 +265,18 @@ def render_app(load_data, load_history, chart, legacy, db_path):
     df = df.copy()
     df['stock_id'] = df['stock_id'].astype(str)
     df = df.sort_values('stock_id')
+    if not st.session_state.get('web_query_initialized'):
+        query_stock = str(st.query_params.get('stock', '')).strip()
+        if query_stock and query_stock in set(df['stock_id']):
+            st.session_state.web_stock = query_stock
+            st.session_state.web_page = '個股詳情'
+        elif query_stock:
+            st.warning(f'找不到股票代號「{query_stock}」，已回到首頁。')
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
+        st.session_state.web_query_initialized = True
     latest = df['date'].max()
     current = int((df['date'] == latest).sum())
     st.caption(f'日線行情 · 最新資料日 {latest} · {current:,} / {len(df):,} 檔同日 · 非即時報價')

@@ -31,6 +31,15 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(result.iloc[0].revenue_growth, 999)
         self.assertTrue(filter_stocks(df, dict(preset='營收成長', latest_only=True, max_price=1)).empty)
 
+    def test_custom_zero_threshold_is_not_unlimited(self):
+        df = pd.DataFrame([
+            dict(stock_id='1', industry='科技', date='2026-10-12', close=10, revenue_growth=0, eps_growth=None, yield_rate=2, position_1y=.5, vol_spike=1),
+            dict(stock_id='2', industry='科技', date='2026-10-12', close=10, revenue_growth=None, eps_growth=5, yield_rate=0, position_1y=.5, vol_spike=1),
+            dict(stock_id='3', industry='科技', date='2026-10-12', close=10, revenue_growth=3, eps_growth=5, yield_rate=0, position_1y=.5, vol_spike=1),
+        ])
+        result = filter_stocks(df, dict(preset='不限條件', revenue_growth_min=0, latest_only=False))
+        self.assertEqual(result.stock_id.tolist(), ['1', '3'])
+
 
 class NavigationTests(unittest.TestCase):
     def setUp(self):
