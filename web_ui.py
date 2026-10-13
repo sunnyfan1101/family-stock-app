@@ -1,8 +1,14 @@
 """Web-only workspace. No report, scheduler, or database writes."""
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+
+try:
+    from supabase import create_client
+except ImportError:  # Optional until Streamlit Secrets are configured.
+    create_client = None
 
 
 PRESETS = {
@@ -39,6 +45,173 @@ RESEARCH_DEFAULTS = {
     'web_sort': '代號', 'web_compact': False, 'web_result_page': 1,
     'web_result_stock': None,
 }
+
+
+def supabase_settings():
+    """Read only public Supabase client settings from Streamlit Secrets."""
+    if create_client is None:
+        return None, None
+    try:
+        section = st.secrets.get('supabase', {})
+        url = section.get('url') or st.secrets.get('SUPABASE_URL')
+        key = section.get('anon_key') or st.secrets.get('SUPABASE_ANON_KEY')
+    except Exception:
+        return None, None
+    return url, key
+
+
+def get_supabase_client():
+    if 'web_supabase_client' in st.session_state:
+        return st.session_state.web_supabase_client
+    url, key = supabase_settings()
+    if not url or not key:
+        return None
+    try:
+        client = create_client(url, key)
+    except Exception:
+        return None
+    st.session_state.web_supabase_client = client
+    return client
+
+
+def response_data(response):
+    return getattr(response, 'data', None) or []
+
+
+def signed_in_user(client):
+    return st.session_state.get('web_supabase_user')
+
+
+def bootstrap_shared_watchlist(client, user):
+    """Create the first family/member/shared list for the signed-in owner."""
+    user_id = str(user.id)
+    families = response_data(
+        client.table('family_groups').select('*').eq('created_by', user_id).limit(1).execute()
+    )
+    if families:
+        family = families[0]
+    else:
+        family = response_data(
+            client.table('family_groups').insert({
+                'name': '家庭共用清單', 'created_by': user_id,
+            }).execute()
+        )[0]
+        client.table('family_members').insert({
+            'family_id': family['id'], 'user_id': user_id, 'role': 'owner',
+        }).execute()
+    family_id = family['id']
+    lists = response_data(
+        client.table('watchlists').select('*').eq('family_id', family_id).eq('scope', 'shared').limit(1).execute()
+    )
+    if lists:
+        watchlist = lists[0]
+    else:
+        watchlist = response_data(
+            client.table('watchlists').insert({
+                'family_id': family_id, 'name': '家庭共用觀察', 'scope': 'shared',
+            }).execute()
+        )[0]
+    return family_id, watchlist['id']
+
+
+def render_watchlist_sidebar(df):
+    """Render optional auth and synchronized watchlist controls."""
+    client = get_supabase_client()
+    with st.sidebar.expander('☁️ 家庭觀察清單', expanded=False):
+        if client is None:
+            st.caption('尚未設定雲端連線；目前仍可使用本機研究功能。')
+            return
+        user = signed_in_user(client)
+        if user is None:
+            with st.form('supabase_request_code'):
+                email = st.text_input('家庭成員 Email', key='web_auth_email')
+                send = st.form_submit_button('寄送登入驗證碼')
+            if send and email.strip():
+                try:
+                    client.auth.sign_in_with_otp({'email': email.strip()})
+                    st.session_state.web_pending_email = email.strip()
+                    st.success('驗證碼已寄出，請查看 Email。')
+                except Exception as exc:
+                    st.error(f'寄送失敗：{exc}')
+            pending = st.session_state.get('web_pending_email')
+            if pending:
+                with st.form('supabase_verify_code'):
+                    code = st.text_input('六位數驗證碼', key='web_auth_code')
+                    verify = st.form_submit_button('登入')
+                if verify and code.strip():
+                    try:
+                        result = client.auth.verify_otp({
+                            'email': pending, 'token': code.strip(), 'type': 'email',
+                        })
+                        authenticated = getattr(result, 'user', None)
+                        if authenticated is None:
+                            authenticated = getattr(getattr(result, 'data', None), 'user', None)
+                        if authenticated is None:
+                            raise ValueError('驗證成功但沒有取得使用者資料')
+                        st.session_state.web_supabase_user = authenticated
+                        st.session_state.pop('web_pending_email', None)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f'登入失敗：{exc}')
+            return
+        try:
+            family_id, watchlist_id = bootstrap_shared_watchlist(client, user)
+            st.session_state.web_watchlist_context = {
+                'family_id': family_id, 'watchlist_id': watchlist_id,
+            }
+            st.caption(f'已登入：{getattr(user, "email", "家庭成員")}')
+            if st.button('登出', key='web_supabase_signout'):
+                client.auth.sign_out()
+                for key in ('web_supabase_user', 'web_watchlist_context', 'web_pending_email'):
+                    st.session_state.pop(key, None)
+                st.rerun()
+            items = response_data(
+                client.table('watchlist_items').select('*').eq('watchlist_id', watchlist_id).order('symbol').execute()
+            )
+            if not items:
+                st.caption('共用觀察清單目前是空的。')
+            else:
+                st.write('已觀察：' + '、'.join(item['symbol'] for item in items))
+        except Exception as exc:
+            st.warning(f'觀察清單尚未初始化：{exc}')
+
+
+def watchlist_items(client):
+    context = st.session_state.get('web_watchlist_context')
+    if not client or not context:
+        return []
+    return response_data(
+        client.table('watchlist_items').select('*').eq('watchlist_id', context['watchlist_id']).order('symbol').execute()
+    )
+
+
+def render_watchlist_action(stock_id):
+    client = get_supabase_client()
+    user = signed_in_user(client) if client else None
+    context = st.session_state.get('web_watchlist_context')
+    if not client or not user or not context:
+        return
+    existing = next((item for item in watchlist_items(client) if item['symbol'] == str(stock_id)), None)
+    if existing:
+        st.caption('⭐ 已在家庭共用觀察清單')
+        note = st.text_input('觀察備註', value=existing.get('note') or '', key=f'watch_note_{stock_id}')
+        c1, c2 = st.columns(2)
+        if c1.button('儲存備註', key=f'watch_save_{stock_id}'):
+            client.table('watchlist_items').update({
+                'note': note,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('id', existing['id']).execute()
+            st.success('備註已儲存')
+        if c2.button('移除觀察', key=f'watch_remove_{stock_id}'):
+            client.table('watchlist_items').delete().eq('id', existing['id']).execute()
+            st.rerun()
+    elif st.button('加入家庭共用觀察', key=f'watch_add_{stock_id}'):
+        client.table('watchlist_items').insert({
+            'watchlist_id': context['watchlist_id'],
+            'symbol': str(stock_id),
+            'added_by': str(user.id),
+        }).execute()
+        st.success('已加入家庭共用觀察清單')
 
 
 def number(value, suffix='', signed=False):
@@ -141,6 +314,7 @@ def render_detail(df, history, chart):
     st.button('← 返回探索選股', on_click=return_to_explore, key='web_back_explore')
     st.title(f"{stock_id} · {row['name']}")
     st.caption(f"{row['industry']} · 行情日期 {row['date']} · 日線資料，非即時報價")
+    render_watchlist_action(stock_id)
     if row['date'] != df['date'].max():
         st.warning('此股票行情早於資料庫最新交易日，可能涉及停牌或資料缺漏，請先確認。')
     a, b = st.columns(2)
@@ -319,6 +493,7 @@ def render_app(load_data, load_history, chart, legacy, db_path):
     df = df.copy()
     df['stock_id'] = df['stock_id'].astype(str)
     df = df.sort_values('stock_id')
+    render_watchlist_sidebar(df)
     if not st.session_state.get('web_query_initialized'):
         query_stock = str(st.query_params.get('stock', '')).strip()
         if query_stock and query_stock in set(df['stock_id']):

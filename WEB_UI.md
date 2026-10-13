@@ -31,3 +31,14 @@
 ## 回復方式
 
 切換側欄進階工具即可使用原介面。若要恢復原入口，僅將 app.py 最後的 render_app 呼叫改回 main()；不要 git checkout 整份 app.py，因為它在本次之前已有未提交修改。
+## 雲端家庭觀察清單
+
+Web UI 可選擇接上 Supabase。未設定 Secrets 時，研究功能仍可正常使用；設定後才會顯示登入與家庭共用觀察清單。
+
+Streamlit Cloud Secrets 使用以下格式，值請從 Supabase API 設定頁取得，不要提交到 GitHub：
+
+[supabase]
+url = "你的 Supabase Project URL"
+anon_key = "你的 Supabase anon public key"
+
+啟用後，使用者以 Email OTP 登入。第一次登入會自動建立家庭群組、成員資料與家庭共用觀察清單。行情資料庫仍為唯讀，觀察清單資料獨立存放於 Supabase。

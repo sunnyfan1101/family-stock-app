@@ -9,10 +9,13 @@ from pathlib import Path
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from web_ui import filter_stocks, number
+from web_ui import filter_stocks, number, response_data
 
 
 class DisplayTests(unittest.TestCase):
+    def test_supabase_response_data_handles_empty_response(self):
+        self.assertEqual(response_data(None), [])
+
     def test_missing_zero_and_sign(self):
         self.assertEqual(number(None), '未取得')
         self.assertEqual(number(float('nan')), '未取得')

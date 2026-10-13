@@ -11,3 +11,4 @@ matplotlib
 google-generativeai
 groq
 jinja2
+supabase
