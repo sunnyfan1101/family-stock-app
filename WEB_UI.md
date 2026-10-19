@@ -44,3 +44,8 @@ anon_key = "你的 Supabase anon public key"
 啟用後，使用者以 Email＋密碼登入。第一次登入會自動建立家庭群組、成員資料與家庭共用觀察清單。行情資料庫仍為唯讀，觀察清單資料獨立存放於 Supabase。
 
 Supabase Free 方案的預設信件是 Magic Link，且不能自訂信件模板，因此本 App 不要求六位數 OTP。第一次使用可按「建立帳號」，完成 Email 確認後，再用 Email＋密碼登入。
+# Supabase 密碼重設
+
+側欄的「寄送重設密碼信」會使用 Streamlit App 網址作為回址。開啟信件後，App 會顯示新密碼與確認密碼欄位；兩次輸入一致且至少 6 個字元後才會更新 Supabase 密碼。
+
+若部署環境不同，可在 Streamlit Secrets 設定 `SUPABASE_REDIRECT_URL`，或在 `[supabase]` 區塊設定 `redirect_url`。不要把任何密碼或 secret key 寫入 GitHub。

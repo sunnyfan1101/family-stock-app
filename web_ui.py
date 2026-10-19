@@ -91,6 +91,66 @@ def signed_in_user(client):
     return st.session_state.get('web_supabase_user')
 
 
+def auth_redirect_url():
+    """The URL Supabase uses after email confirmation/recovery."""
+    try:
+        return st.secrets.get('SUPABASE_REDIRECT_URL') or (
+            st.secrets.get('supabase', {}).get('redirect_url')
+        ) or 'https://family-stock-app-8rw6hwkeyxshkeelyygjle.streamlit.app/'
+    except Exception:
+        return 'https://family-stock-app-8rw6hwkeyxshkeelyygjle.streamlit.app/'
+
+
+def recover_password_session(client):
+    """Exchange a Supabase PKCE recovery code returned in the App URL."""
+    if st.session_state.get('web_password_recovery'):
+        return True
+    code = str(st.query_params.get('code', '') or '').strip()
+    if not code:
+        return False
+    try:
+        response = client.auth.exchange_code_for_session(code)
+        user = authenticated_user(response)
+        if user is None:
+            current = client.auth.get_user()
+            user = getattr(current, 'user', None)
+        if user is None:
+            raise ValueError('重設連結已開啟，但沒有取得有效的重設工作階段')
+        st.session_state.web_supabase_user = user
+        st.session_state.web_password_recovery = True
+        st.query_params.clear()
+        return True
+    except Exception as exc:
+        st.session_state.web_password_recovery_error = str(exc)
+        return False
+
+
+def render_password_recovery(client):
+    """Render the new-password form after Supabase recovery redirect."""
+    if not st.session_state.get('web_password_recovery'):
+        return False
+    st.info('請設定新的登入密碼。')
+    with st.form('supabase_password_recovery'):
+        new_password = st.text_input('新密碼', type='password')
+        confirm_password = st.text_input('確認新密碼', type='password')
+        submit = st.form_submit_button('更新密碼')
+    if submit:
+        if len(new_password) < 6:
+            st.warning('密碼至少需要 6 個字元。')
+        elif new_password != confirm_password:
+            st.warning('兩次輸入的密碼不一致。')
+        else:
+            try:
+                client.auth.update_user({'password': new_password})
+                st.session_state.pop('web_password_recovery', None)
+                st.success('密碼已更新，請使用新密碼登入。')
+                client.auth.sign_out()
+                st.session_state.pop('web_supabase_user', None)
+            except Exception as exc:
+                st.error(f'密碼更新失敗：{exc}')
+    return True
+
+
 def bootstrap_shared_watchlist(client, user):
     """Create the first family/member/shared list for the signed-in owner."""
     user_id = str(user.id)
@@ -130,9 +190,14 @@ def render_watchlist_sidebar(df):
         if client is None:
             st.caption('尚未設定雲端連線；目前仍可使用本機研究功能。')
             return
+        recover_password_session(client)
+        if st.session_state.pop('web_password_recovery_error', None):
+            st.error('重設連結無效或已過期，請重新寄送重設信。')
+        if render_password_recovery(client):
+            return
         user = signed_in_user(client)
         if user is None:
-            st.caption('使用 Supabase Email 帳號登入；目前免費方案不提供六碼 OTP。')
+            st.caption('使用 Supabase Email＋密碼登入。')
             with st.form('supabase_password_auth'):
                 email = st.text_input('家庭成員 Email', key='web_auth_email')
                 password = st.text_input('密碼', type='password', key='web_auth_password')
@@ -161,6 +226,21 @@ def render_watchlist_sidebar(df):
                     st.error(f'操作失敗：{exc}')
             elif login or signup:
                 st.warning('請輸入 Email 與密碼。')
+            with st.form('supabase_password_reset_request'):
+                reset_email = st.text_input('忘記密碼？輸入 Email 寄送重設連結', key='web_reset_email')
+                request_reset = st.form_submit_button('寄送重設密碼信')
+            if request_reset:
+                if not reset_email.strip():
+                    st.warning('請輸入 Email。')
+                else:
+                    try:
+                        client.auth.reset_password_for_email(
+                            reset_email.strip(),
+                            options={'redirect_to': auth_redirect_url()},
+                        )
+                        st.success('重設連結已寄出，請開啟信件後回到 App 設定新密碼。')
+                    except Exception as exc:
+                        st.error(f'寄送失敗：{exc}')
             return
         try:
             family_id, watchlist_id = bootstrap_shared_watchlist(client, user)

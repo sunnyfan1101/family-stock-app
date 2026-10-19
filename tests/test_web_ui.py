@@ -9,7 +9,13 @@ from pathlib import Path
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from web_ui import authenticated_user, filter_stocks, number, response_data
+from web_ui import (
+    auth_redirect_url,
+    authenticated_user,
+    filter_stocks,
+    number,
+    response_data,
+)
 
 
 class DisplayTests(unittest.TestCase):
@@ -30,6 +36,9 @@ class DisplayTests(unittest.TestCase):
 
         self.assertEqual(authenticated_user(Response()).id, 'user-1')
         self.assertEqual(authenticated_user(NestedResponse()).id, 'user-1')
+
+    def test_password_reset_redirect_has_streamlit_fallback(self):
+        self.assertTrue(auth_redirect_url().startswith('https://'))
 
     def test_missing_zero_and_sign(self):
         self.assertEqual(number(None), '未取得')
