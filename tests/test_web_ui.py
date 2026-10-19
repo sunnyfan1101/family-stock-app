@@ -12,6 +12,7 @@ from streamlit.testing.v1 import AppTest
 from web_ui import (
     auth_redirect_url,
     authenticated_user,
+    authenticated_session,
     filter_stocks,
     number,
     response_data,
@@ -36,6 +37,16 @@ class DisplayTests(unittest.TestCase):
 
         self.assertEqual(authenticated_user(Response()).id, 'user-1')
         self.assertEqual(authenticated_user(NestedResponse()).id, 'user-1')
+
+        class Session:
+            access_token = 'test-token'
+
+        class SessionResponse:
+            user = User()
+            session = Session()
+            data = None
+
+        self.assertIsNotNone(authenticated_session(SessionResponse()))
 
     def test_password_reset_redirect_has_streamlit_fallback(self):
         self.assertTrue(auth_redirect_url().startswith('https://'))

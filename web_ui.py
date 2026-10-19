@@ -7,8 +7,13 @@ import streamlit as st
 
 try:
     from supabase import create_client
+    try:
+        from supabase.lib.client_options import ClientOptions
+    except ImportError:
+        ClientOptions = None
 except ImportError:  # Optional until Streamlit Secrets are configured.
     create_client = None
+    ClientOptions = None
 
 
 PRESETS = {
@@ -67,7 +72,10 @@ def get_supabase_client():
     if not url or not key:
         return None
     try:
-        client = create_client(url, key)
+        if ClientOptions is not None:
+            client = create_client(url, key, options=ClientOptions(flow_type='pkce'))
+        else:
+            client = create_client(url, key)
     except Exception:
         return None
     st.session_state.web_supabase_client = client
@@ -85,6 +93,15 @@ def authenticated_user(response):
         data = getattr(response, 'data', None)
         user = getattr(data, 'user', None)
     return user
+
+
+def authenticated_session(response):
+    """Get a session returned by sign-up/sign-in responses, if any."""
+    session = getattr(response, 'session', None)
+    if session is None:
+        data = getattr(response, 'data', None)
+        session = getattr(data, 'session', None)
+    return session
 
 
 def signed_in_user(client):
@@ -106,10 +123,15 @@ def recover_password_session(client):
     if st.session_state.get('web_password_recovery'):
         return True
     code = str(st.query_params.get('code', '') or '').strip()
-    if not code:
+    access_token = str(st.query_params.get('access_token', '') or '').strip()
+    refresh_token = str(st.query_params.get('refresh_token', '') or '').strip()
+    if not code and not (access_token and refresh_token):
         return False
     try:
-        response = client.auth.exchange_code_for_session(code)
+        if code:
+            response = client.auth.exchange_code_for_session(code)
+        else:
+            response = client.auth.set_session(access_token, refresh_token)
         user = authenticated_user(response)
         if user is None:
             current = client.auth.get_user()
@@ -207,12 +229,17 @@ def render_watchlist_sidebar(df):
                 try:
                     if signup:
                         result = client.auth.sign_up({
-                            'email': email.strip(), 'password': password,
+                            'email': email.strip(),
+                            'password': password,
+                            'options': {'email_redirect_to': auth_redirect_url()},
                         })
-                        if authenticated_user(result) is not None:
-                            st.success('帳號已建立；若收到確認信，請先完成 Email 確認，再回來登入。')
+                        authenticated = authenticated_user(result)
+                        if authenticated is not None and authenticated_session(result) is not None:
+                            st.session_state.web_supabase_user = authenticated
+                            st.success('帳號已建立並登入。')
+                            st.rerun()
                         else:
-                            st.success('確認信已寄出，請先完成 Email 確認，再回來登入。')
+                            st.info('帳號已建立。請開啟確認信完成 Email 驗證，再回來按「登入」。')
                     else:
                         result = client.auth.sign_in_with_password({
                             'email': email.strip(), 'password': password,
@@ -226,6 +253,22 @@ def render_watchlist_sidebar(df):
                     st.error(f'操作失敗：{exc}')
             elif login or signup:
                 st.warning('請輸入 Email 與密碼。')
+            with st.form('supabase_signup_resend'):
+                resend_email = st.text_input('沒收到確認信？輸入 Email 重新寄送', key='web_resend_email')
+                resend = st.form_submit_button('重新寄送確認信')
+            if resend:
+                if not resend_email.strip():
+                    st.warning('請輸入 Email。')
+                else:
+                    try:
+                        client.auth.resend({
+                            'type': 'signup',
+                            'email': resend_email.strip(),
+                            'options': {'email_redirect_to': auth_redirect_url()},
+                        })
+                        st.success('確認信已重新寄出，請檢查收件匣與垃圾郵件。')
+                    except Exception as exc:
+                        st.error(f'重新寄送失敗：{exc}')
             with st.form('supabase_password_reset_request'):
                 reset_email = st.text_input('忘記密碼？輸入 Email 寄送重設連結', key='web_reset_email')
                 request_reset = st.form_submit_button('寄送重設密碼信')
