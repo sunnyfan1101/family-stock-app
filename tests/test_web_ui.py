@@ -106,6 +106,20 @@ class NavigationTests(unittest.TestCase):
         self.at.radio(key='web_page').set_value('首頁').run()
         self.assertEqual(self.at.button(key='recent_2330').label, '2330 台積電')
 
+    def test_auth_page_return_preserves_research(self):
+        self.at.radio(key='web_page').set_value('探索選股').run()
+        self.at.selectbox(key='web_preset').select('營收成長')
+        self.at.button(key='FormSubmitter:web_filters-套用篩選').click().run()
+        self.at.selectbox(key='web_sort').select('殖利率').run()
+        self.at.button(key='web_open_auth').click().run()
+        self.assertEqual(self.at.title[0].value, '家庭帳號')
+        self.assertEqual(len(self.at.sidebar.text_input), 0)
+        self.at.button(key='web_auth_back').click().run()
+        self.assert_clean()
+        self.assertEqual(self.at.radio(key='web_page').value, '探索選股')
+        self.assertEqual(self.at.selectbox(key='web_preset').value, '營收成長')
+        self.assertEqual(self.at.selectbox(key='web_sort').value, '殖利率')
+
     def test_filters_reset_cards_and_open(self):
         self.at.radio(key='web_page').set_value('探索選股').run()
         self.at.selectbox(key='web_preset').select('營收成長')

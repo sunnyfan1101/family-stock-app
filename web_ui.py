@@ -4,16 +4,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+import logging
 
 try:
     from supabase import create_client
-    try:
-        from supabase.lib.client_options import ClientOptions
-    except ImportError:
-        ClientOptions = None
+    from supabase.lib.client_options import SyncClientOptions
 except ImportError:  # Optional until Streamlit Secrets are configured.
     create_client = None
-    ClientOptions = None
+    SyncClientOptions = None
 
 
 PRESETS = {
@@ -54,13 +52,11 @@ RESEARCH_DEFAULTS = {
 
 def supabase_settings():
     """Read only public Supabase client settings from Streamlit Secrets."""
-    if create_client is None:
-        return None, None
     try:
         section = st.secrets.get('supabase', {})
         url = section.get('url') or st.secrets.get('SUPABASE_URL')
         key = section.get('anon_key') or st.secrets.get('SUPABASE_ANON_KEY')
-    except Exception:
+    except FileNotFoundError:
         return None, None
     return url, key
 
@@ -68,16 +64,25 @@ def supabase_settings():
 def get_supabase_client():
     if 'web_supabase_client' in st.session_state:
         return st.session_state.web_supabase_client
-    url, key = supabase_settings()
-    if not url or not key:
+    if create_client is None:
+        st.session_state.web_auth_status = 'dependency'
         return None
     try:
-        if ClientOptions is not None:
-            client = create_client(url, key, options=ClientOptions(flow_type='pkce'))
-        else:
-            client = create_client(url, key)
+        url, key = supabase_settings()
     except Exception:
+        st.session_state.web_auth_status = 'initialization'
         return None
+    if not url or not key:
+        st.session_state.web_auth_status = 'missing'
+        return None
+    try:
+        client = create_client(url, key, options=SyncClientOptions(flow_type='implicit'))
+    except Exception as exc:
+        # Never log exception text: SDK errors can include URLs, keys or tokens.
+        logging.getLogger(__name__).warning('Supabase initialization failed (%s)', type(exc).__name__)
+        st.session_state.web_auth_status = 'initialization'
+        return None
+    st.session_state.web_auth_status = 'ready'
     st.session_state.web_supabase_client = client
     return client
 
@@ -118,64 +123,219 @@ def auth_redirect_url():
         return 'https://family-stock-app-8rw6hwkeyxshkeelyygjle.streamlit.app/'
 
 
+AUTH_QUERY_KEYS = ('code', 'access_token', 'refresh_token', 'token_hash', 'type', 'error', 'error_code', 'error_description')
+
+
 def recover_password_session(client):
-    """Exchange a Supabase PKCE recovery code returned in the App URL."""
-    if st.session_state.get('web_password_recovery'):
-        return True
-    code = str(st.query_params.get('code', '') or '').strip()
-    access_token = str(st.query_params.get('access_token', '') or '').strip()
-    refresh_token = str(st.query_params.get('refresh_token', '') or '').strip()
-    if not code and not (access_token and refresh_token):
-        return False
+    """Do not trust callback URLs or transport bearer credentials in queries."""
+    if any(key in st.query_params for key in AUTH_QUERY_KEYS):
+        for key in AUTH_QUERY_KEYS:
+            st.query_params.pop(key, None)
+        st.session_state.web_auth_open = True
+        st.session_state.web_auth_notice = '若已完成信箱確認，請用密碼登入。重設密碼請使用信中的驗證碼；舊連結不適用。'
+    return bool(st.session_state.get('web_password_recovery'))
+
+
+def recovery_enabled():
     try:
-        if code:
-            response = client.auth.exchange_code_for_session(code)
-        else:
-            response = client.auth.set_session(access_token, refresh_token)
-        user = authenticated_user(response)
-        if user is None:
-            current = client.auth.get_user()
-            user = getattr(current, 'user', None)
-        if user is None:
-            raise ValueError('重設連結已開啟，但沒有取得有效的重設工作階段')
-        st.session_state.web_supabase_user = user
-        st.session_state.web_password_recovery = True
-        st.query_params.clear()
-        return True
-    except Exception as exc:
-        st.session_state.web_password_recovery_error = str(exc)
+        return st.secrets.get('supabase', {}).get('recovery_email_otp_enabled') is True
+    except Exception:
         return False
+
+
+def clear_auth():
+    for key in ('web_supabase_user', 'web_watchlist_context', 'web_password_recovery',
+                'web_supabase_client'):
+        st.session_state.pop(key, None)
+
+
+def auth_error(exc):
+    """Allowlisted descriptions only; never render raw provider errors."""
+    code = getattr(exc, 'code', '')
+    if code in ('over_email_send_rate_limit', 'over_request_rate_limit'):
+        return '操作太頻繁，請稍後再試。'
+    if code == 'email_not_confirmed':
+        return '請先完成 Email 確認，再登入。'
+    if code == 'weak_password':
+        return '密碼不符合服務規則，請使用更長且不常見的密碼。'
+    return '操作未完成，請確認輸入或稍後再試；若持續失敗，請聯絡管理員。'
 
 
 def render_password_recovery(client):
-    """Render the new-password form after Supabase recovery redirect."""
     if not st.session_state.get('web_password_recovery'):
         return False
-    st.info('請設定新的登入密碼。')
-    with st.form('supabase_password_recovery'):
-        new_password = st.text_input('新密碼', type='password')
-        confirm_password = st.text_input('確認新密碼', type='password')
+    st.info('信箱驗證完成，請設定新的登入密碼。')
+    with st.form('supabase_password_recovery', clear_on_submit=True):
+        password = st.text_input('新密碼', type='password')
+        confirm = st.text_input('確認新密碼', type='password')
         submit = st.form_submit_button('更新密碼')
     if submit:
-        if len(new_password) < 6:
-            st.warning('密碼至少需要 6 個字元。')
-        elif new_password != confirm_password:
-            st.warning('兩次輸入的密碼不一致。')
+        if len(password) < 8 or password != confirm:
+            st.warning('密碼至少 8 個字元，且兩次輸入必須一致。')
         else:
             try:
-                client.auth.update_user({'password': new_password})
-                st.session_state.pop('web_password_recovery', None)
-                st.success('密碼已更新，請使用新密碼登入。')
-                client.auth.sign_out()
-                st.session_state.pop('web_supabase_user', None)
+                client.auth.update_user({'password': password})
             except Exception as exc:
-                st.error(f'密碼更新失敗：{exc}')
+                st.error(auth_error(exc))
+            else:
+                try:
+                    client.auth.sign_out()
+                except Exception:
+                    pass
+                clear_auth()
+                st.session_state.web_auth_notice = '密碼已更新，請使用新密碼登入。'
+                st.rerun()
     return True
 
 
+def render_auth_page():
+    with st.container(width=640):
+        render_auth_content()
+
+
+def render_auth_content():
+    st.title('家庭帳號')
+    if st.button('← 返回研究', key='web_auth_back'):
+        # Cancelling recovery must not leave an authenticated recovery session.
+        if st.session_state.get('web_password_recovery'):
+            clear_auth()
+        st.session_state.web_auth_open = False
+        st.session_state.web_page = st.session_state.get('web_auth_return', '首頁')
+        st.session_state.web_search = st.session_state.get('web_auth_search')
+        restore_research_state()
+        st.rerun()
+    st.caption('登入以同步家庭觀察清單；不登入也能搜尋與篩選股票。')
+    notice = st.session_state.pop('web_auth_notice', None)
+    if notice:
+        st.info(notice)
+    client = get_supabase_client()
+    if client is None:
+        messages = {
+            'missing': '尚未設定雲端帳號服務，研究功能仍可使用。',
+            'dependency': '帳號服務套件未能載入，請管理員檢查部署依賴。',
+            'initialization': '帳號服務初始化失敗，請管理員檢查設定格式與套件版本；這不代表 Secrets 缺失。',
+        }
+        st.warning(messages.get(st.session_state.get('web_auth_status'), messages['initialization']))
+        return
+    if render_password_recovery(client):
+        return
+    user = signed_in_user(client)
+    if user:
+        st.success('已登入家庭帳號。')
+        if st.button('登出', key='web_supabase_signout'):
+            try:
+                client.auth.sign_out()
+            except Exception:
+                pass
+            clear_auth()
+            st.rerun()
+        return
+    mode = st.radio('帳號操作', ['登入', '建立帳號', '忘記密碼'], horizontal=True, key='web_auth_mode')
+    if mode in ('登入', '建立帳號'):
+        with st.form('supabase_password_auth', clear_on_submit=True):
+            email = st.text_input('Email', key='web_auth_email')
+            password = st.text_input('密碼', type='password', key='web_auth_password')
+            confirm = st.text_input('確認密碼', type='password') if mode == '建立帳號' else password
+            submit = st.form_submit_button(mode)
+        if submit:
+            if '@' not in email.strip() or not password:
+                st.warning('請輸入有效 Email 與密碼。')
+            elif mode == '建立帳號' and (len(password) < 8 or password != confirm):
+                st.warning('密碼至少 8 個字元，且兩次輸入必須一致。')
+            else:
+                try:
+                    credentials = {'email': email.strip(), 'password': password}
+                    if mode == '建立帳號':
+                        result = client.auth.sign_up({**credentials, 'options': {'email_redirect_to': auth_redirect_url()}})
+                    else:
+                        result = client.auth.sign_in_with_password(credentials)
+                    user, session = authenticated_user(result), authenticated_session(result)
+                    if user is not None and session is not None:
+                        st.session_state.web_supabase_user = user
+                        st.rerun()
+                    elif mode == '建立帳號':
+                        st.info('申請已受理。若此信箱符合註冊條件，將收到確認信；請確認後回來登入。已有帳號可直接登入或重設密碼。')
+                    else:
+                        st.error('未取得有效登入工作階段，請重試。')
+                except Exception as exc:
+                    st.error(auth_error(exc))
+        if mode == '建立帳號':
+            with st.expander('沒收到確認信？'):
+                st.caption('請先檢查垃圾郵件；寄信受服務限制，重送不代表帳號存在或郵件已送達。')
+                with st.form('supabase_signup_resend', clear_on_submit=True):
+                    email = st.text_input('確認信 Email')
+                    resend = st.form_submit_button('重新寄送確認信')
+                if resend:
+                    if '@' not in email.strip():
+                        st.warning('請輸入有效 Email。')
+                    else:
+                        try:
+                            client.auth.resend({'type': 'signup', 'email': email.strip(),
+                                                'options': {'email_redirect_to': auth_redirect_url()}})
+                            st.info('請求已受理。若符合條件，將收到確認信。')
+                        except Exception as exc:
+                            st.error(auth_error(exc))
+    else:
+        if not recovery_enabled():
+            st.warning('密碼重設尚待管理員啟用驗證碼信件模板。暫時無法在此重設；請聯絡管理員，不需刪除帳號。')
+            return
+        st.caption('輸入 Email 申請重設，再將信中的一次性驗證碼填入下方。可在新分頁操作，請勿分享驗證碼。')
+        with st.form('supabase_password_reset_request', clear_on_submit=True):
+            email = st.text_input('Email', key='web_reset_email')
+            submit = st.form_submit_button('寄送重設密碼信')
+        if submit:
+            if '@' not in email.strip():
+                st.warning('請輸入有效 Email。')
+            else:
+                try:
+                    client.auth.reset_password_for_email(email.strip(), options={'redirect_to': auth_redirect_url()})
+                    st.info('請求已受理。若此帳號符合條件，將收到重設信；不代表信件已送達。')
+                except Exception as exc:
+                    st.error(auth_error(exc))
+        with st.form('supabase_recovery_verify', clear_on_submit=True):
+            email = st.text_input('收信 Email')
+            token = st.text_input('信中的驗證碼', type='password')
+            verify = st.form_submit_button('驗證並設定新密碼')
+        if verify:
+            if '@' not in email.strip() or not token.strip():
+                st.warning('請輸入收信 Email 與驗證碼。')
+            else:
+                try:
+                    result = client.auth.verify_otp({'email': email.strip(), 'token': token.strip(), 'type': 'recovery'})
+                    if authenticated_user(result) is None or authenticated_session(result) is None:
+                        raise ValueError('No recovery session')
+                    # Recovery must not bootstrap a family or expose watchlists.
+                    st.session_state.pop('web_watchlist_context', None)
+                    st.session_state.pop('web_supabase_user', None)
+                    st.session_state.web_password_recovery = True
+                    st.rerun()
+                except Exception as exc:
+                    st.error(auth_error(exc))
+
+
 def bootstrap_shared_watchlist(client, user):
-    """Create the first family/member/shared list for the signed-in owner."""
+    """Reuse membership before ownership; repair only the user's own membership.
+
+    RLS remains authoritative. Concurrent bootstrap requires server uniqueness /
+    a transactional RPC for full atomicity; errors must not trigger new families.
+    """
     user_id = str(user.id)
+    memberships = response_data(
+        client.table('family_members').select('*').eq('user_id', user_id).order('family_id').limit(1).execute()
+    )
+    if memberships:
+        family_id = memberships[0]['family_id']
+        lists = response_data(
+            client.table('watchlists').select('*').eq('family_id', family_id).eq('scope', 'shared').limit(1).execute()
+        )
+        if lists:
+            return family_id, lists[0]['id']
+        if memberships[0].get('role') != 'owner':
+            raise ValueError('Shared list requires owner setup')
+        watchlist = response_data(client.table('watchlists').insert({
+            'family_id': family_id, 'name': '家庭共用觀察', 'scope': 'shared',
+        }).execute())[0]
+        return family_id, watchlist['id']
     families = response_data(
         client.table('family_groups').select('*').eq('created_by', user_id).limit(1).execute()
     )
@@ -187,9 +347,9 @@ def bootstrap_shared_watchlist(client, user):
                 'name': '家庭共用清單', 'created_by': user_id,
             }).execute()
         )[0]
-        client.table('family_members').insert({
-            'family_id': family['id'], 'user_id': user_id, 'role': 'owner',
-        }).execute()
+    client.table('family_members').insert({
+        'family_id': family['id'], 'user_id': user_id, 'role': 'owner',
+    }).execute()
     family_id = family['id']
     lists = response_data(
         client.table('watchlists').select('*').eq('family_id', family_id).eq('scope', 'shared').limit(1).execute()
@@ -206,112 +366,30 @@ def bootstrap_shared_watchlist(client, user):
 
 
 def render_watchlist_sidebar(df):
-    """Render optional auth and synchronized watchlist controls."""
+    """Only a compact entry point and shared-list summary belong in the sidebar."""
+    if st.sidebar.button('家庭帳號 / 登入', key='web_open_auth'):
+        capture_research_state()
+        st.session_state.web_auth_search = st.session_state.get('web_search')
+        st.session_state.web_auth_return = st.session_state.get('web_page', '首頁')
+        st.session_state.web_auth_open = True
+        st.rerun()
     client = get_supabase_client()
+    user = signed_in_user(client)
+    if not client or not user or st.session_state.get('web_password_recovery'):
+        return
     with st.sidebar.expander('☁️ 家庭觀察清單', expanded=False):
-        if client is None:
-            st.caption('尚未設定雲端連線；目前仍可使用本機研究功能。')
-            return
-        recover_password_session(client)
-        if st.session_state.pop('web_password_recovery_error', None):
-            st.error('重設連結無效或已過期，請重新寄送重設信。')
-        if render_password_recovery(client):
-            return
-        user = signed_in_user(client)
-        if user is None:
-            st.caption('Supabase 雲端同步')
-            mode = st.radio(
-                '帳號操作', ['登入', '建立帳號', '忘記密碼'],
-                horizontal=True, key='web_auth_mode', label_visibility='collapsed',
-            )
-            if mode in ('登入', '建立帳號'):
-                with st.form('supabase_password_auth'):
-                    email = st.text_input('Email', key='web_auth_email')
-                    password = st.text_input('密碼', type='password', key='web_auth_password')
-                    submit = st.form_submit_button(mode)
-                if submit:
-                    if not email.strip() or not password:
-                        st.warning('請輸入 Email 與密碼。')
-                    else:
-                        try:
-                            if mode == '建立帳號':
-                                result = client.auth.sign_up({
-                                    'email': email.strip(),
-                                    'password': password,
-                                    'options': {'email_redirect_to': auth_redirect_url()},
-                                })
-                                authenticated = authenticated_user(result)
-                                if authenticated is not None and authenticated_session(result) is not None:
-                                    st.session_state.web_supabase_user = authenticated
-                                    st.success('帳號已建立並登入。')
-                                    st.rerun()
-                                else:
-                                    st.info('帳號已建立，請先點確認信，再回來登入。')
-                            else:
-                                result = client.auth.sign_in_with_password({
-                                    'email': email.strip(), 'password': password,
-                                })
-                                authenticated = authenticated_user(result)
-                                if authenticated is None:
-                                    raise ValueError('登入成功但沒有取得使用者資料')
-                                st.session_state.web_supabase_user = authenticated
-                                st.rerun()
-                        except Exception as exc:
-                            st.error(f'操作失敗：{exc}')
-                if mode == '建立帳號':
-                    with st.form('supabase_signup_resend'):
-                        resend_email = st.text_input('沒收到確認信？', key='web_resend_email')
-                        resend = st.form_submit_button('重新寄送確認信')
-                    if resend:
-                        if not resend_email.strip():
-                            st.warning('請輸入 Email。')
-                        else:
-                            try:
-                                client.auth.resend({
-                                    'type': 'signup',
-                                    'email': resend_email.strip(),
-                                    'options': {'email_redirect_to': auth_redirect_url()},
-                                })
-                                st.success('確認信已重新寄出。')
-                            except Exception as exc:
-                                st.error(f'重新寄送失敗：{exc}')
-            else:
-                with st.form('supabase_password_reset_request'):
-                    reset_email = st.text_input('Email', key='web_reset_email')
-                    request_reset = st.form_submit_button('寄送重設密碼信')
-                if request_reset:
-                    if not reset_email.strip():
-                        st.warning('請輸入 Email。')
-                    else:
-                        try:
-                            client.auth.reset_password_for_email(
-                                reset_email.strip(),
-                                options={'redirect_to': auth_redirect_url()},
-                            )
-                            st.success('重設信已寄出，請開啟信件後回到 App。')
-                        except Exception as exc:
-                            st.error(f'寄送失敗：{exc}')
-            return
         try:
-            family_id, watchlist_id = bootstrap_shared_watchlist(client, user)
-            st.session_state.web_watchlist_context = {
-                'family_id': family_id, 'watchlist_id': watchlist_id,
-            }
-            st.caption(f'已登入：{getattr(user, "email", "家庭成員")}')
-            if st.button('登出', key='web_supabase_signout'):
-                client.auth.sign_out()
-                for key in ('web_supabase_user', 'web_watchlist_context'):
-                    st.session_state.pop(key, None)
-                st.rerun()
-            items = response_data(
-                client.table('watchlist_items').select('*').eq('watchlist_id', watchlist_id).order('symbol').execute()
-            )
-            if not items:
-                st.caption('共用觀察清單目前是空的。')
-            else:
-                st.write('已觀察：' + '、'.join(item['symbol'] for item in items))
-        except Exception as exc:
-            st.warning(f'觀察清單尚未初始化：{exc}')
+            context = st.session_state.get('web_watchlist_context')
+            if not context:
+                family_id, watchlist_id = bootstrap_shared_watchlist(client, user)
+                context = {'family_id': family_id, 'watchlist_id': watchlist_id}
+                st.session_state.web_watchlist_context = context
+            items = watchlist_items(client)
+            st.caption('已登入家庭帳號')
+            st.write('已觀察：' + '、'.join(item['symbol'] for item in items) if items else '共用觀察清單目前是空的。')
+        except Exception:
+            st.session_state.pop('web_watchlist_context', None)
+            st.warning('家庭清單暫時無法載入，請稍後重試或請管理員檢查成員權限。帳號仍已登入。')
 
 
 def watchlist_items(client):
@@ -596,6 +674,7 @@ def render_explore(df):
 
 
 def render_app(load_data, load_history, chart, legacy, db_path):
+    recover_password_session(None)
     st.markdown('''<style>
     div[data-testid="stMetricValue"] {color: inherit; font-size: 26px !important;}
     @media (max-width: 768px) {
@@ -603,6 +682,9 @@ def render_app(load_data, load_history, chart, legacy, db_path):
       [data-testid="stSidebar"] {min-width: 0 !important; max-width: 90vw !important;}
     }
     </style>''', unsafe_allow_html=True)
+    if st.session_state.get('web_auth_open'):
+        render_auth_page()
+        return
     if st.sidebar.toggle('進階工具（原版完整介面）', key='web_legacy'):
         st.sidebar.caption('保留完整篩選、相似股票與 AI 顧問；切換開關可回新版。')
         legacy()

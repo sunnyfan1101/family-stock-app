@@ -27,10 +27,7 @@ st.set_page_config(page_title="StockAI 投資助理", layout="wide", page_icon="
 # 自定義 CSS 讓介面更乾淨
 st.markdown("""
 <style>
-    /* 1. 全局設定 */
-    .stApp {
-        background-color: #0E1117; /* 深色背景 */
-    }
+    /* Respect Streamlit's selected theme so text/background stay readable. */
     
     /* 2. 隱藏預設元件 */
     #MainMenu {visibility: hidden;}

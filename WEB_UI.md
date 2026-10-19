@@ -21,7 +21,7 @@
 互動測試需要現有資料庫，讀取資料但不生成 AI 或發送報告。
 
 手動啟動：`venv/bin/python -m streamlit run app.py --server.address 127.0.0.1`。
-未執行雲端部署。不同部署的套件版本需與本機驗證版本核對；本機驗證 Streamlit 1.55.0。
+部署由 GitHub main 觸發 Streamlit Cloud；push 成功與雲端完成部署是兩個不同的驗證項目。測試結果與部署限制見下方登入修復紀錄。
 
 ## 下一階段
 
@@ -41,11 +41,42 @@ Streamlit Cloud Secrets 使用以下格式，值請從 Supabase API 設定頁取
 url = "你的 Supabase Project URL"
 anon_key = "你的 Supabase anon public key"
 
-啟用後，使用者以 Email＋密碼登入。第一次登入會自動建立家庭群組、成員資料與家庭共用觀察清單。行情資料庫仍為唯讀，觀察清單資料獨立存放於 Supabase。
+啟用後，使用者以 Email＋密碼登入。「家庭帳號 / 登入」開啟獨立主頁表單，不再塞在側欄。返回研究會保留本次連線中的篩選、排序、頁碼與個股位置。重新整理或新分頁仍需重新登入，未實作跨連線登入持久化。
 
-Supabase Free 方案的預設信件是 Magic Link，且不能自訂信件模板，因此本 App 不要求六位數 OTP。第一次使用可按「建立帳號」，完成 Email 確認後，再用 Email＋密碼登入。
-# Supabase 密碼重設
+初始化使用同步 SDK 的 `SyncClientOptions`，不是缺少 `storage` 屬性的基底 `ClientOptions`。未設定、依賴缺失與初始化錯誤分開顯示；診斷僅記錄例外類別，不記錄原始例外、URL、金鑰、密碼、Email 或權杖。不要放 service-role key；瀏覽使用 anon/publishable key 及使用者 session，RLS 必須由管理員配置。
 
-側欄的「寄送重設密碼信」會使用 Streamlit App 網址作為回址。開啟信件後，App 會顯示新密碼與確認密碼欄位；兩次輸入一致且至少 6 個字元後才會更新 Supabase 密碼。
+## 註冊與確認信
 
-若部署環境不同，可在 Streamlit Secrets 設定 `SUPABASE_REDIRECT_URL`，或在 `[supabase]` 區塊設定 `redirect_url`。不要把任何密碼或 secret key 寫入 GitHub。
+- 密碼須至少 8 字元並輸入確認密碼；Supabase 可另外要求更嚴格政策。
+- 有效 user **與** session 同時存在才視為已登入。
+- 沒有 session 時只顯示條件式受理訊息。Supabase 可能為既有帳號回傳模糊成功，因此不能宣稱「帳號已建立」或「信已送達」。
+- 使用 implicit 流程的確認信完成服務端信箱驗證後，使用者回 App 以密碼登入；App 不讀 URL fragment，不從 query 接受 access/refresh token，不把任意 code 當 recovery。
+- 舊 PKCE 連結不再交換；舊連結需重新申請。不使用會在新 Streamlit session 遺失的 verifier，也不把 verifier 放全域快取。
+- 管理員需檢查 Supabase Site URL、Redirect URLs、Email confirmation 與寄件服務。預設寄件服務的收件人限制、速率限制、垃圾郵件都可能影響送達。Supabase 支援自訂信件模板；原文件聲稱 Free 不能自訂是不正確的。
+
+## 密碼重設：手動 Email OTP
+
+選用一次性 Email 驗證碼，讓使用者可在另一分頁、瀏覽器或裝置輸入，不依賴原始 session 的 PKCE verifier。
+
+**管理員尚需完成的設定（本修復不更改雲端設定）：**
+
+1. 在 Supabase Authentication → Email Templates → Reset Password 模板中放入 `{{ .Token }}`，指示使用者回 App 的「忘記密碼」輸入 Email 與驗證碼。不要保留會先消耗驗證碼的 `{{ .ConfirmationURL }}` 重設連結。
+2. 確認驗證碼有效期、速率限制與郵件寄送配置；在 Streamlit Secrets 的 `[supabase]` 設定 `recovery_email_otp_enabled = true`。未啟用前 UI 明示未配置，不發送無法使用的重設信。
+3. 若部署環境不同，在 `[supabase]` 設定 `redirect_url` 或使用 `SUPABASE_REDIRECT_URL`，並在 Supabase allowlist 加入相同 HTTPS App 網址。
+4. 由使用者操作測試帳號，驗收新分頁收碼、`verify_otp` recovery、更新密碼、舊碼重用失敗、新密碼登入及舊密碼失敗。請勿在聊天或 GitHub 傳送驗證碼、密碼或金鑰。
+
+App 呼叫 `verify_otp({email, token, type: 'recovery'})`，取得有效 session 後才開放更新密碼。重設 session 不提供家庭資料、不初始化家庭。更新成功後清除本機登入，即使遠端登出失敗也不顯示成密碼更新失敗。返回研究會丟棄 recovery client。
+
+## 家庭初始化與權限
+
+先查現有 `family_members`，共用成員沿用家庭；多個家庭時以 family_id 排序選第一個，尚無家庭切換 UI。只有沒有成員資格時才查自己建立的家庭，再補 owner membership；真正新使用者才建立家庭。一般成員若家庭沒有 shared list，不會自行升權或建立新家庭。
+
+家庭初始化仍是多個 API 呼叫；沒有交易 RPC，無法保證多分頁同時初始化的原子性。唯一約束、RLS 與 transaction RPC 屬管理員的資料層工作，本次不改 SQL。RLS 錯誤會停止並顯示通用提示，不以新建另一家庭掩蓋失敗。即使清單初始化失敗，使用者仍可從帳號頁登出。
+
+## 修復驗證範圍
+
+`python -m unittest discover -s tests -v` 包含真實 SDK 的無網路 dummy client 建構、mock auth / AppTest、家庭成員重用與研究頁導航。測試不建立真實帳號、不發送郵件、不改雲端 Auth 設定或 SQL。實際郵件送達與使用者參與的端到端登入／重設驗收仍待上述配置完成。
+
+2026-10-19：隔離 venv 安裝全部 requirements；Python 3.12、Streamlit 1.66.0、Supabase 2.33.0，23 項 unittest/AppTest 通過，`pip check` 與 compileall 通過。使用真實 SDK 重現舊 ClientOptions 的 `AttributeError: storage`，新同步 options 在禁止網路的測試通過。核心 UI/Auth 依賴已固定至本次驗證版本。
+
+Chromium 本機桌面 1440×1000、手機 viewport 390×844 已檢查註冊頁、確認密碼、返回研究、無橫向溢出；使用 dummy 設定、未提交註冊。修正既有強制深色背景使淺色主題文字不可讀的問題。此為瀏覽器模擬尺寸，不代表手機實機或真實收信驗收。
