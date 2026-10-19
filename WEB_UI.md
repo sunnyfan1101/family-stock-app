@@ -41,4 +41,6 @@ Streamlit Cloud Secrets 使用以下格式，值請從 Supabase API 設定頁取
 url = "你的 Supabase Project URL"
 anon_key = "你的 Supabase anon public key"
 
-啟用後，使用者以 Email OTP 登入。第一次登入會自動建立家庭群組、成員資料與家庭共用觀察清單。行情資料庫仍為唯讀，觀察清單資料獨立存放於 Supabase。
+啟用後，使用者以 Email＋密碼登入。第一次登入會自動建立家庭群組、成員資料與家庭共用觀察清單。行情資料庫仍為唯讀，觀察清單資料獨立存放於 Supabase。
+
+Supabase Free 方案的預設信件是 Magic Link，且不能自訂信件模板，因此本 App 不要求六位數 OTP。第一次使用可按「建立帳號」，完成 Email 確認後，再用 Email＋密碼登入。

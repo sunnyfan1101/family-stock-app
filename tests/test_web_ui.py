@@ -9,12 +9,27 @@ from pathlib import Path
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from web_ui import filter_stocks, number, response_data
+from web_ui import authenticated_user, filter_stocks, number, response_data
 
 
 class DisplayTests(unittest.TestCase):
     def test_supabase_response_data_handles_empty_response(self):
         self.assertEqual(response_data(None), [])
+
+    def test_supabase_auth_user_response_shapes(self):
+        class User:
+            id = 'user-1'
+
+        class Response:
+            user = User()
+            data = None
+
+        class NestedResponse:
+            user = None
+            data = Response()
+
+        self.assertEqual(authenticated_user(Response()).id, 'user-1')
+        self.assertEqual(authenticated_user(NestedResponse()).id, 'user-1')
 
     def test_missing_zero_and_sign(self):
         self.assertEqual(number(None), '未取得')

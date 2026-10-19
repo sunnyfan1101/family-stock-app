@@ -78,6 +78,15 @@ def response_data(response):
     return getattr(response, 'data', None) or []
 
 
+def authenticated_user(response):
+    """Get the user object returned by Supabase auth responses."""
+    user = getattr(response, 'user', None)
+    if user is None:
+        data = getattr(response, 'data', None)
+        user = getattr(data, 'user', None)
+    return user
+
+
 def signed_in_user(client):
     return st.session_state.get('web_supabase_user')
 
@@ -123,36 +132,35 @@ def render_watchlist_sidebar(df):
             return
         user = signed_in_user(client)
         if user is None:
-            with st.form('supabase_request_code'):
+            st.caption('使用 Supabase Email 帳號登入；目前免費方案不提供六碼 OTP。')
+            with st.form('supabase_password_auth'):
                 email = st.text_input('家庭成員 Email', key='web_auth_email')
-                send = st.form_submit_button('寄送登入驗證碼')
-            if send and email.strip():
+                password = st.text_input('密碼', type='password', key='web_auth_password')
+                login = st.form_submit_button('登入')
+                signup = st.form_submit_button('建立帳號')
+            if (login or signup) and email.strip() and password:
                 try:
-                    client.auth.sign_in_with_otp({'email': email.strip()})
-                    st.session_state.web_pending_email = email.strip()
-                    st.success('驗證碼已寄出，請查看 Email。')
-                except Exception as exc:
-                    st.error(f'寄送失敗：{exc}')
-            pending = st.session_state.get('web_pending_email')
-            if pending:
-                with st.form('supabase_verify_code'):
-                    code = st.text_input('六位數驗證碼', key='web_auth_code')
-                    verify = st.form_submit_button('登入')
-                if verify and code.strip():
-                    try:
-                        result = client.auth.verify_otp({
-                            'email': pending, 'token': code.strip(), 'type': 'email',
+                    if signup:
+                        result = client.auth.sign_up({
+                            'email': email.strip(), 'password': password,
                         })
-                        authenticated = getattr(result, 'user', None)
+                        if authenticated_user(result) is not None:
+                            st.success('帳號已建立；若收到確認信，請先完成 Email 確認，再回來登入。')
+                        else:
+                            st.success('確認信已寄出，請先完成 Email 確認，再回來登入。')
+                    else:
+                        result = client.auth.sign_in_with_password({
+                            'email': email.strip(), 'password': password,
+                        })
+                        authenticated = authenticated_user(result)
                         if authenticated is None:
-                            authenticated = getattr(getattr(result, 'data', None), 'user', None)
-                        if authenticated is None:
-                            raise ValueError('驗證成功但沒有取得使用者資料')
+                            raise ValueError('登入成功但沒有取得使用者資料')
                         st.session_state.web_supabase_user = authenticated
-                        st.session_state.pop('web_pending_email', None)
                         st.rerun()
-                    except Exception as exc:
-                        st.error(f'登入失敗：{exc}')
+                except Exception as exc:
+                    st.error(f'操作失敗：{exc}')
+            elif login or signup:
+                st.warning('請輸入 Email 與密碼。')
             return
         try:
             family_id, watchlist_id = bootstrap_shared_watchlist(client, user)
@@ -162,7 +170,7 @@ def render_watchlist_sidebar(df):
             st.caption(f'已登入：{getattr(user, "email", "家庭成員")}')
             if st.button('登出', key='web_supabase_signout'):
                 client.auth.sign_out()
-                for key in ('web_supabase_user', 'web_watchlist_context', 'web_pending_email'):
+                for key in ('web_supabase_user', 'web_watchlist_context'):
                     st.session_state.pop(key, None)
                 st.rerun()
             items = response_data(
