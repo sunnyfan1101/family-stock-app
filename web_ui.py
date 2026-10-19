@@ -219,71 +219,78 @@ def render_watchlist_sidebar(df):
             return
         user = signed_in_user(client)
         if user is None:
-            st.caption('使用 Supabase Email＋密碼登入。')
-            with st.form('supabase_password_auth'):
-                email = st.text_input('家庭成員 Email', key='web_auth_email')
-                password = st.text_input('密碼', type='password', key='web_auth_password')
-                login = st.form_submit_button('登入')
-                signup = st.form_submit_button('建立帳號')
-            if (login or signup) and email.strip() and password:
-                try:
-                    if signup:
-                        result = client.auth.sign_up({
-                            'email': email.strip(),
-                            'password': password,
-                            'options': {'email_redirect_to': auth_redirect_url()},
-                        })
-                        authenticated = authenticated_user(result)
-                        if authenticated is not None and authenticated_session(result) is not None:
-                            st.session_state.web_supabase_user = authenticated
-                            st.success('帳號已建立並登入。')
-                            st.rerun()
-                        else:
-                            st.info('帳號已建立。請開啟確認信完成 Email 驗證，再回來按「登入」。')
+            st.caption('Supabase 雲端同步')
+            mode = st.radio(
+                '帳號操作', ['登入', '建立帳號', '忘記密碼'],
+                horizontal=True, key='web_auth_mode', label_visibility='collapsed',
+            )
+            if mode in ('登入', '建立帳號'):
+                with st.form('supabase_password_auth'):
+                    email = st.text_input('Email', key='web_auth_email')
+                    password = st.text_input('密碼', type='password', key='web_auth_password')
+                    submit = st.form_submit_button(mode)
+                if submit:
+                    if not email.strip() or not password:
+                        st.warning('請輸入 Email 與密碼。')
                     else:
-                        result = client.auth.sign_in_with_password({
-                            'email': email.strip(), 'password': password,
-                        })
-                        authenticated = authenticated_user(result)
-                        if authenticated is None:
-                            raise ValueError('登入成功但沒有取得使用者資料')
-                        st.session_state.web_supabase_user = authenticated
-                        st.rerun()
-                except Exception as exc:
-                    st.error(f'操作失敗：{exc}')
-            elif login or signup:
-                st.warning('請輸入 Email 與密碼。')
-            with st.form('supabase_signup_resend'):
-                resend_email = st.text_input('沒收到確認信？輸入 Email 重新寄送', key='web_resend_email')
-                resend = st.form_submit_button('重新寄送確認信')
-            if resend:
-                if not resend_email.strip():
-                    st.warning('請輸入 Email。')
-                else:
-                    try:
-                        client.auth.resend({
-                            'type': 'signup',
-                            'email': resend_email.strip(),
-                            'options': {'email_redirect_to': auth_redirect_url()},
-                        })
-                        st.success('確認信已重新寄出，請檢查收件匣與垃圾郵件。')
-                    except Exception as exc:
-                        st.error(f'重新寄送失敗：{exc}')
-            with st.form('supabase_password_reset_request'):
-                reset_email = st.text_input('忘記密碼？輸入 Email 寄送重設連結', key='web_reset_email')
-                request_reset = st.form_submit_button('寄送重設密碼信')
-            if request_reset:
-                if not reset_email.strip():
-                    st.warning('請輸入 Email。')
-                else:
-                    try:
-                        client.auth.reset_password_for_email(
-                            reset_email.strip(),
-                            options={'redirect_to': auth_redirect_url()},
-                        )
-                        st.success('重設連結已寄出，請開啟信件後回到 App 設定新密碼。')
-                    except Exception as exc:
-                        st.error(f'寄送失敗：{exc}')
+                        try:
+                            if mode == '建立帳號':
+                                result = client.auth.sign_up({
+                                    'email': email.strip(),
+                                    'password': password,
+                                    'options': {'email_redirect_to': auth_redirect_url()},
+                                })
+                                authenticated = authenticated_user(result)
+                                if authenticated is not None and authenticated_session(result) is not None:
+                                    st.session_state.web_supabase_user = authenticated
+                                    st.success('帳號已建立並登入。')
+                                    st.rerun()
+                                else:
+                                    st.info('帳號已建立，請先點確認信，再回來登入。')
+                            else:
+                                result = client.auth.sign_in_with_password({
+                                    'email': email.strip(), 'password': password,
+                                })
+                                authenticated = authenticated_user(result)
+                                if authenticated is None:
+                                    raise ValueError('登入成功但沒有取得使用者資料')
+                                st.session_state.web_supabase_user = authenticated
+                                st.rerun()
+                        except Exception as exc:
+                            st.error(f'操作失敗：{exc}')
+                if mode == '建立帳號':
+                    with st.form('supabase_signup_resend'):
+                        resend_email = st.text_input('沒收到確認信？', key='web_resend_email')
+                        resend = st.form_submit_button('重新寄送確認信')
+                    if resend:
+                        if not resend_email.strip():
+                            st.warning('請輸入 Email。')
+                        else:
+                            try:
+                                client.auth.resend({
+                                    'type': 'signup',
+                                    'email': resend_email.strip(),
+                                    'options': {'email_redirect_to': auth_redirect_url()},
+                                })
+                                st.success('確認信已重新寄出。')
+                            except Exception as exc:
+                                st.error(f'重新寄送失敗：{exc}')
+            else:
+                with st.form('supabase_password_reset_request'):
+                    reset_email = st.text_input('Email', key='web_reset_email')
+                    request_reset = st.form_submit_button('寄送重設密碼信')
+                if request_reset:
+                    if not reset_email.strip():
+                        st.warning('請輸入 Email。')
+                    else:
+                        try:
+                            client.auth.reset_password_for_email(
+                                reset_email.strip(),
+                                options={'redirect_to': auth_redirect_url()},
+                            )
+                            st.success('重設信已寄出，請開啟信件後回到 App。')
+                        except Exception as exc:
+                            st.error(f'寄送失敗：{exc}')
             return
         try:
             family_id, watchlist_id = bootstrap_shared_watchlist(client, user)
