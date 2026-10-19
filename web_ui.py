@@ -113,6 +113,16 @@ def signed_in_user(client):
     return st.session_state.get('web_supabase_user')
 
 
+def signed_in_identity(user):
+    """Return a safe human-readable identity for the account status UI."""
+    email = getattr(user, 'email', None)
+    if email:
+        return str(email)
+    if isinstance(user, dict) and user.get('email'):
+        return str(user['email'])
+    return '已驗證帳號'
+
+
 def auth_redirect_url():
     """The URL Supabase uses after email confirmation/recovery."""
     try:
@@ -221,7 +231,8 @@ def render_auth_content():
         return
     user = signed_in_user(client)
     if user:
-        st.success('已登入家庭帳號。')
+        st.success('已登入家庭帳號')
+        st.caption(f'目前帳號：{signed_in_identity(user)}')
         if st.button('登出', key='web_supabase_signout'):
             try:
                 client.auth.sign_out()

@@ -12,6 +12,11 @@ import web_ui
 
 
 class ClientTests(unittest.TestCase):
+    def test_signed_in_identity_supports_supabase_user_shapes(self):
+        self.assertEqual(web_ui.signed_in_identity(NS(email='sunny@example.com')), 'sunny@example.com')
+        self.assertEqual(web_ui.signed_in_identity({'email': 'family@example.com'}), 'family@example.com')
+        self.assertEqual(web_ui.signed_in_identity(NS(id='u')), '已驗證帳號')
+
     def test_real_sync_client_constructs_without_network(self):
         with patch.object(httpx.Client, 'send', side_effect=AssertionError('Network forbidden')):
             client = create_client('https://example.supabase.co', 'dummy-public-key',
@@ -90,6 +95,13 @@ class AuthPageTests(unittest.TestCase):
         self.client.table.assert_not_called()
         self.at.button(key='web_supabase_signout').click().run()
         self.assertNotIn('web_supabase_user', self.at.session_state)
+
+    def test_successful_login_shows_account_email(self):
+        self.client.auth.sign_in_with_password.return_value = NS(
+            user=NS(id='u', email='sunny@example.com'), session=NS())
+        self.credentials()
+        self.at.button(key='FormSubmitter:supabase_password_auth-登入').click().run()
+        self.assertTrue(any('sunny@example.com' in x.value for x in self.at.caption))
 
     def test_recovery_disabled_does_not_send(self):
         self.mode('忘記密碼')
