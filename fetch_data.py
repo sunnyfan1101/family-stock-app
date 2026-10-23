@@ -106,6 +106,21 @@ def run_batch_precompute(stock_ids=None):
         raise RuntimeError("預先計算模組未載入，資料不可發布")
 
 
+def require_daily_coverage(today_fetched, total_stocks, force_financials=False):
+    """Reject an empty/partial trading day before revenue, metrics and packing.
+
+    This is a data-quality gate, not a market-calendar decision: an exchange
+    outage or delayed feed must not be recorded as a confirmed holiday.
+    """
+    if force_financials:
+        return
+    minimum = max(1500, int(total_stocks * 0.85))
+    if len(today_fetched) < minimum:
+        raise RuntimeError(
+            f"本次來源僅抓到 {len(today_fetched)} 檔今日行情（至少需 {minimum} 檔），候選資料不可發布"
+        )
+
+
 # --- 1. 取得股票清單 ---
 
 # --- 1. 取得股票清單 ---
@@ -609,6 +624,13 @@ def update_stock_data(progress_bar=None, status_text=None):
 
         time.sleep(0.2)
 
+    # Reject a closed/partial market day before the expensive downstream work.
+    # Do not classify this as a holiday: a failed quote feed looks identical.
+    if stock_errors:
+        print(f"⚠️ 個股處理失敗 {len(stock_errors)} 檔，樣本: {stock_errors[:20]}")
+        raise RuntimeError("有個股交易資料處理失敗，候選資料不可發布")
+    require_daily_coverage(today_fetched, len(all_stocks), force_financials)
+
     # --- Part B: 新增與補齊每日市場統計 ---
     print("\n📊 正在檢查並補齊大盤創新低家數...")
     try:
@@ -667,17 +689,8 @@ def update_stock_data(progress_bar=None, status_text=None):
         print(f"❌ 大盤統計失敗: {e}")
 
 
-    # ★★★ Part C: 月營收智能增量更新 ★★★
-    # 只在第一次執行時更新月營收（避免每次重複）
-    if REVENUE_AVAILABLE and len(all_stocks) > 100:
-        print("\n📊 開始月營收智能增量更新...")
-        try:
-            update_monthly_revenue(start_date="2024-01-01", batch_size=50)
-            print("✅ 月營收增量更新完成!")
-        except Exception as e:
-            print(f"⚠️ 月營收更新失敗: {e}")
-    else:
-        print("\n⏭️ 月營收更新跳過（已是最新或批次過小）")
+    # Monthly revenue has its own staged entrypoint.  Daily quotes must not
+    # trigger FinMind calls or silently swallow a revenue failure.
 
     # ★★★ Part D: 批次預先計算 ★★★
     # 只預先計算本次更新的股票
@@ -719,11 +732,6 @@ def update_stock_data(progress_bar=None, status_text=None):
     except Exception as e:
         raise RuntimeError(f"瘦身或壓縮失敗: {e}") from e
 
-    if stock_errors:
-        print(f"⚠️ 個股處理失敗 {len(stock_errors)} 檔，樣本: {stock_errors[:20]}")
-        raise RuntimeError("有個股交易資料處理失敗，候選資料不可發布")
-    if not force_financials and len(today_fetched) < max(1500, int(len(all_stocks) * 0.85)):
-        raise RuntimeError(f"本次來源僅抓到 {len(today_fetched)} 檔今日行情，候選資料不可發布")
     print(f"本次新鮮行情覆蓋 {len(today_fetched)}/{len(all_stocks)} 檔")
 
 if __name__ == "__main__":

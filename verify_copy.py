@@ -54,6 +54,8 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--source',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--copy-only', action='store_true',
+                   help='SQLite online backup without full historical recalculation')
     a=p.parse_args()
     source=a.source.resolve(strict=True)
     target=a.output.resolve()
@@ -65,6 +67,12 @@ def main():
     with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True) as original:
         with sqlite3.connect(target) as copy:
             original.backup(copy)
+    if a.copy_only:
+        with sqlite3.connect(target) as copy:
+            if copy.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise RuntimeError('staged SQLite backup integrity check failed')
+        print('STOCK_STAGE_COPY_ONLY_OK', flush=True)
+        return
     with sqlite3.connect(target) as c:
         before=c.execute('SELECT count(*),sum(close),sum(volume) FROM daily_prices').fetchone()
         rebuild(c)
