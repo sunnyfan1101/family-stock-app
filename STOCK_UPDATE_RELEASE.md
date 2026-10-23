@@ -29,3 +29,17 @@ Known limits: close-to-close returns are not TWSE/TPEX official adjusted
 reference-price returns; 17 historical rows had missing close in the source
 snapshot and were left missing. Trading holidays currently fail the daily
 `--require-today` gate rather than being recognized from a market calendar.
+
+Phase 3 staged candidate (not yet scheduled): the daily quote gate now runs
+immediately after the per-symbol fetch, before market statistics, all-stock
+precompute, and compression. An empty/partial feed is **not** proof of a
+holiday, so this does not skip the per-symbol fetch. Daily updates no longer
+call the monthly revenue API. `local_revenue_updater.sh` runs monthly revenue
+on a staged copy with the same release lock; it skips publication when there
+are no new rows, otherwise synchronizes revenue metrics and the latest-stock
+snapshot, packs that exact DB, and uses the existing validation/promotion
+gate. Its staged copy uses SQLite backup with `--copy-only`, avoiding the
+2.6-million-row historical rebuild. The existing quarterly
+`--force-financials` mode is not yet separated.
+Do not switch cron until the Phase 2 normal-trading-day update and report
+checks pass, and the split runner has been tested against a disposable DB.
