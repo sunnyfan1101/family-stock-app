@@ -1,71 +1,38 @@
-#!/bin/bash
-# local_stock_updater.sh - 本地股價與月營收更新腳本
-# 執行內容：解壓縮 → fetch_data.py（股價 + 月營收 + 預計算）
-
-# 🛡️ 確保 PATH 包含必要的指令
+#!/usr/bin/env bash
+# Staged update; never remove the live DB before validating its replacement.
+set -euo pipefail
 export PATH="/usr/bin:/bin:/home/sunny/.npm-global/bin:/home/sunny/.local/bin:$PATH"
-
-cd /home/sunny/family-stock-app
-
-LOG_FILE="/home/sunny/family-stock-app/cron_local.log"
-LOCK_FILE="/tmp/family_stock_local_db_update.lock"
-PYTHON_BIN="/home/sunny/family-stock-app/venv/bin/python"
-if [ ! -x "$PYTHON_BIN" ]; then
-    PYTHON_BIN="/usr/bin/python3"
-fi
-
-exec 8>"$LOCK_FILE"
+PROJECT_DIR="/home/sunny/family-stock-app"
+LOG_FILE="$PROJECT_DIR/cron_local.log"
+PYTHON_BIN="$PROJECT_DIR/venv/bin/python"
+cd "$PROJECT_DIR"
+exec 8>/tmp/family_stock_local_db_update.lock
 if ! flock -n 8; then
-    echo "========================================" >> $LOG_FILE
-    echo "⏭️ 股價更新已在執行中，跳過重複啟動 | $(date '+%Y-%m-%d %H:%M:%S')" >> $LOG_FILE
-    echo "" >> $LOG_FILE
-    exit 0
+    echo "STOCK_UPDATE_SKIPPED: existing update holds lock" >> "$LOG_FILE"
+    exit 75
 fi
-
-echo "========================================" >> $LOG_FILE
-echo "📈 股價更新開始 | $(date '+%Y-%m-%d %H:%M:%S')" >> $LOG_FILE
-
-# 1. 解壓縮資料庫（如果有 .xz）
-echo "📦 解壓縮資料庫..." >> $LOG_FILE
-if [ -f "stock_data.db.xz" ]; then
-    # 🛡️ 保留 .xz 備份（用 -k 參數）
-    rm -f stock_data.db 2>/dev/null
-    xz -d -k stock_data.db.xz 2>> $LOG_FILE
-    if [ $? -eq 0 ]; then
-        echo "✅ 解壓縮完成" >> $LOG_FILE
-    else
-        echo "⚠️ 解壓縮失敗" >> $LOG_FILE
-    fi
-else
-    echo "⚠️ 找不到 stock_data.db.xz" >> $LOG_FILE
+exec >> "$LOG_FILE" 2>&1
+trap 'status=$?; if [ "$status" -ne 0 ]; then echo "STOCK_UPDATE_FAILED exit=$status stage=${STAGE_DIR:-none} date=$(date -Is)"; fi' EXIT
+echo "STOCK_UPDATE_START $(date -Is)"
+if [ ! -f stock_data.db ]; then
+    echo "No live DB; refusing automatic restoration/promotion" >&2
+    exit 1
 fi
-
-# 2. 執行股價 + 月營收 + 預計算
-echo "🚀 執行 fetch_data.py..." >> $LOG_FILE
-"$PYTHON_BIN" fetch_data.py "$@" >> $LOG_FILE 2>&1
-FETCH_EXIT=$?
-if [ $FETCH_EXIT -eq 0 ]; then
-    echo "✅ fetch_data.py 完成" >> $LOG_FILE
-    echo "🔍 執行 DB 健康檢查..." >> $LOG_FILE
-    "$PYTHON_BIN" db_health_check.py >> $LOG_FILE 2>&1
-    HEALTH_EXIT=$?
-    if [ $HEALTH_EXIT -ne 0 ]; then
-        echo "🛑 DB 健康檢查失敗，取消 GitHub 推送，結束碼: $HEALTH_EXIT" >> $LOG_FILE
-        exit $HEALTH_EXIT
-    fi
-    echo "✅ DB 健康檢查通過" >> $LOG_FILE
-
-    echo "☁️ 推送新版資料庫到 GitHub..." >> $LOG_FILE
-    /home/sunny/family-stock-app/push_db_to_github.sh >> $LOG_FILE 2>&1
-    PUSH_EXIT=$?
-    if [ $PUSH_EXIT -eq 0 ]; then
-        echo "✅ GitHub 資料庫推送完成" >> $LOG_FILE
-    else
-        echo "⚠️ GitHub 資料庫推送失敗，結束碼: $PUSH_EXIT" >> $LOG_FILE
-    fi
-else
-    echo "⚠️ fetch_data.py 結束碼: $FETCH_EXIT" >> $LOG_FILE
-fi
-
-echo "✅ 股價更新完成 | $(date '+%Y-%m-%d %H:%M:%S')" >> $LOG_FILE
-echo "" >> $LOG_FILE
+STAGE_PARENT="$PROJECT_DIR/.stock-staging"
+mkdir -p "$STAGE_PARENT"
+STAGE_DIR=$(mktemp -d "$STAGE_PARENT/run-$(date +%Y%m%d-%H%M%S)-XXXXXX")
+export STOCK_DB_PATH="$STAGE_DIR/stock_data.db"
+export STOCK_FINMIND_DONE_PATH="$STAGE_DIR/finmind_done.txt"
+export STOCK_REQUIRE_FRESH_UNIVERSE=1
+if [ -f finmind_done.txt ]; then cp finmind_done.txt "$STOCK_FINMIND_DONE_PATH"; fi
+"$PYTHON_BIN" verify_copy.py --source "$PROJECT_DIR/stock_data.db" --output "$STOCK_DB_PATH"
+"$PYTHON_BIN" fetch_data.py "$@"
+REQUIRE_TODAY=(--require-today)
+for arg in "$@"; do
+    if [ "$arg" = "--force-financials" ]; then REQUIRE_TODAY=(); fi
+done
+"$PYTHON_BIN" stock_release.py validate "$STOCK_DB_PATH" --live "$PROJECT_DIR/stock_data.db" "${REQUIRE_TODAY[@]}"
+"$PYTHON_BIN" stock_release.py promote "$STOCK_DB_PATH" --live "$PROJECT_DIR/stock_data.db" "${REQUIRE_TODAY[@]}"
+if [ -f "$STOCK_FINMIND_DONE_PATH" ]; then cp "$STOCK_FINMIND_DONE_PATH" "$PROJECT_DIR/finmind_done.txt"; fi
+"$PROJECT_DIR/push_db_to_github.sh"
+echo "STOCK_UPDATE_SUCCESS $(date -Is)"

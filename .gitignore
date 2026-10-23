@@ -2,6 +2,7 @@ venv/
 .venv/
 __pycache__/
 stock_data.db
+.stock-staging/
 .env
 *.log
 *_token.txt

@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import database
+from data_correctness import refresh_price_summary, ensure_revenue_columns
 
 def get_connection():
     return database.get_connection()
@@ -19,7 +20,7 @@ def precompute_position(stock_id, conn):
     # 取得最近一日收盤價
     cursor.execute('''
         SELECT close FROM daily_prices 
-        WHERE stock_id = ? 
+        WHERE stock_id = ? AND close>0
         ORDER BY date DESC LIMIT 1
     ''', (stock_id,))
     
@@ -31,9 +32,9 @@ def precompute_position(stock_id, conn):
     
     # 計算近一年位階
     cursor.execute('''
-        SELECT MAX(close) as year_high, MIN(close) as year_low
-        FROM daily_prices 
-        WHERE stock_id = ? AND date >= date('now', '-250 days')
+        SELECT MAX(close), MIN(close) FROM (
+            SELECT close FROM daily_prices WHERE stock_id = ? AND close>0 ORDER BY date DESC LIMIT 250
+        )
     ''', (stock_id,))
     
     row = cursor.fetchone()
@@ -48,9 +49,9 @@ def precompute_position(stock_id, conn):
     
     # 計算近二年位階
     cursor.execute('''
-        SELECT MAX(close) as year_high_2y, MIN(close) as year_low_2y
-        FROM daily_prices 
-        WHERE stock_id = ? AND date >= date('now', '-500 days')
+        SELECT MAX(close), MIN(close) FROM (
+            SELECT close FROM daily_prices WHERE stock_id = ? AND close>0 ORDER BY date DESC LIMIT 500
+        )
     ''', (stock_id,))
     
     row = cursor.fetchone()
@@ -76,7 +77,7 @@ def precompute_bias(stock_id, conn):
     cursor.execute('''
         SELECT close, ma_20, ma_60 
         FROM daily_prices 
-        WHERE stock_id = ? 
+        WHERE stock_id = ? AND close>0
         ORDER BY date DESC LIMIT 1
     ''', (stock_id,))
     
@@ -110,7 +111,7 @@ def precompute_vol_spike(stock_id, conn):
         SELECT volume, vol_ma_20 
         FROM daily_prices d
         JOIN stocks s ON d.stock_id = s.stock_id
-        WHERE d.stock_id = ? 
+        WHERE d.stock_id = ? AND d.close>0
         ORDER BY d.date DESC LIMIT 1
     ''', (stock_id,))
     
@@ -121,7 +122,7 @@ def precompute_vol_spike(stock_id, conn):
     volume, vol_ma_20 = row
     
     # 計算爆量倍數
-    if volume and vol_ma_20 and vol_ma_20 > 0:
+    if volume is not None and vol_ma_20 and vol_ma_20 > 0:
         vol_spike = volume / vol_ma_20
     else:
         vol_spike = None
@@ -149,43 +150,8 @@ def precompute_consolidation_log(stock_id, conn):
 
 
 def sync_revenue_yoy_to_stocks(conn):
-    """
-    將 monthly_revenue 的最新 cumulative_yoy 同步到 stocks 表的 revenue_growth
-    """
-    cursor = conn.cursor()
-    
-    print("🔄 開始同步月營收 YOY 到 stocks 表...")
-    
-    # 取得每檔股票的最新 cumulative_yoy
-    cursor.execute('''
-        SELECT stock_id, cumulative_yoy
-        FROM monthly_revenue m1
-        WHERE (stock_id, year, month) = (
-            SELECT stock_id, year, month
-            FROM monthly_revenue m2
-            WHERE m2.stock_id = m1.stock_id
-            ORDER BY year DESC, month DESC
-            LIMIT 1
-        )
-    ''')
-    
-    yoy_data = cursor.fetchall()
-    updated = 0
-    skipped = 0
-    
-    for stock_id, cumulative_yoy in yoy_data:
-        if cumulative_yoy is not None:
-            cursor.execute('''
-                UPDATE stocks 
-                SET revenue_growth = ?
-                WHERE stock_id = ?
-            ''', (cumulative_yoy, stock_id))
-            updated += 1
-        else:
-            skipped += 1
-    
-    conn.commit()
-    print(f"✅ YOY 同步完成！更新 {updated} 檔，跳過 {skipped} 檔")
+    from data_correctness import sync_revenue
+    sync_revenue(conn)
 
 
 def refresh_latest_stock_snapshot(conn=None):
@@ -199,6 +165,7 @@ def refresh_latest_stock_snapshot(conn=None):
 
     cursor = conn.cursor()
     print("📸 開始刷新 latest_stock_snapshot...")
+    ensure_revenue_columns(conn)
 
     cursor.execute("DROP TABLE IF EXISTS latest_stock_snapshot")
     cursor.execute('''
@@ -206,7 +173,9 @@ def refresh_latest_stock_snapshot(conn=None):
         SELECT
             s.stock_id, s.name, s.industry, s.market_type,
             s.pe_ratio, s.yield_rate, s.pb_ratio, s.eps, s.beta, s.market_cap,
-            s.revenue_growth, s.revenue_streak, s.capital, s.vol_ma_5, s.vol_ma_20,
+            s.revenue_growth, s.revenue_monthly_yoy, s.revenue_ytd_yoy,
+            s.revenue_ttm, s.revenue_period, s.revenue_streak, s.capital,
+            s.vol_ma_5, s.vol_ma_20,
             s.eps_growth, s.gross_margin,
             s.operating_margin, s.pretax_margin, s.net_margin,
             s.consolidation_days, s.consolidation_days_20,
@@ -215,11 +184,11 @@ def refresh_latest_stock_snapshot(conn=None):
             s.year_high, s.year_low, s.year_high_2y, s.year_low_2y,
             d.date, d.close, d.change_pct, d.volume, d.ma_5, d.ma_20, d.ma_60
         FROM stocks s
-        JOIN daily_prices d ON s.stock_id = d.stock_id
+        JOIN daily_prices d ON s.stock_id = d.stock_id AND d.close>0
         WHERE d.date = (
             SELECT MAX(date)
             FROM daily_prices dp
-            WHERE dp.stock_id = s.stock_id
+            WHERE dp.stock_id = s.stock_id AND dp.close>0
         )
     ''')
 
@@ -269,6 +238,7 @@ def update_precomputed_metrics():
         
         try:
             # 計算各項指標
+            refresh_price_summary(conn, stock_id)
             position_1y, position_2y = precompute_position(stock_id, conn)
             bias_20, bias_60 = precompute_bias(stock_id, conn)
             vol_spike = precompute_vol_spike(stock_id, conn)
@@ -296,7 +266,7 @@ def update_precomputed_metrics():
             
         except Exception as e:
             print(f"\n❌ {stock_id} 計算失敗: {e}")
-            continue
+            raise
     
     # 🔄 同步月營收 YOY
     sync_revenue_yoy_to_stocks(conn)
@@ -330,50 +300,29 @@ def update_weekly_ma():
             # 取得日線資料
             df = pd.read_sql('''
                 SELECT date, close, volume FROM daily_prices 
-                WHERE stock_id = ? ORDER BY date ASC
+                WHERE stock_id = ? AND close>0 ORDER BY date ASC
             ''', conn, params=(stock_id,))
             
-            if len(df) < 20:
+            if df.empty:
                 continue
-            
-            df['date'] = pd.to_datetime(df['date'])
-            
-            # 轉換週線
-            logic = {
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }
-            
-            # 需要完整日線才能計算週線
-            # 這裡簡化處理：直接用日線 close 計算週均線
-            # 更精確的做法是先轉週線再算均線
-            
-            # 計算週均線（近似值：5日 = 1週，20日 = 4週）
-            df['weekly_ma_5'] = df['close'].rolling(window=5).mean()
-            df['weekly_ma_20'] = df['close'].rolling(window=20).mean()
-            
-            # 更新 daily_prices 表
-            for _, row in df.iterrows():
-                if pd.notna(row['weekly_ma_5']) or pd.notna(row['weekly_ma_20']):
-                    cursor.execute('''
-                        UPDATE daily_prices 
-                        SET weekly_ma_5 = ?, weekly_ma_20 = ?
-                        WHERE stock_id = ? AND date = ?
-                    ''', (
-                        row['weekly_ma_5'] if pd.notna(row['weekly_ma_5']) else None,
-                        row['weekly_ma_20'] if pd.notna(row['weekly_ma_20']) else None,
-                        stock_id,
-                        row['date'].strftime('%Y-%m-%d')
-                    ))
+            cursor.execute('UPDATE daily_prices SET weekly_ma_5=NULL, weekly_ma_20=NULL WHERE stock_id=?', (stock_id,))
+            from data_correctness import weekly_averages
+            close = pd.Series(df['close'].to_numpy(), index=pd.to_datetime(df['date']))
+            weekly = weekly_averages(close)
+            rows = [
+                (None if pd.isna(a) else float(a), None if pd.isna(b) else float(b),
+                 stock_id, date.strftime('%Y-%m-%d'))
+                for date, a, b in weekly.itertuples(name=None)
+            ]
+            # Include NULLs to clear incorrect legacy values for short histories.
+            cursor.executemany('UPDATE daily_prices SET weekly_ma_5=?, weekly_ma_20=? '
+                               'WHERE stock_id=? AND date=?', rows)
             
             updated += 1
             
         except Exception as e:
             print(f"\n❌ {stock_id} 週線計算失敗: {e}")
-            continue
+            raise
     
     conn.commit()
     refresh_latest_stock_snapshot(conn)

@@ -97,8 +97,8 @@ def calculate_yoy(df):
     df = df.sort_values(["revenue_year", "revenue_month"]).reset_index(drop=True)
     
     # 計算單月 YOY
-    df["last_year_revenue"] = 0.0
-    df["yoy_growth"] = 0.0
+    df["last_year_revenue"] = float('nan')
+    df["yoy_growth"] = float('nan')
     
     for idx, row in df.iterrows():
         year = row["revenue_year"]
@@ -117,8 +117,8 @@ def calculate_yoy(df):
     
     # 計算累積營收與累積 YOY
     df["cumulative_revenue"] = 0.0
-    df["last_year_cumulative"] = 0.0
-    df["cumulative_yoy"] = 0.0
+    df["last_year_cumulative"] = float('nan')
+    df["cumulative_yoy"] = float('nan')
     
     for (year, stock_id), group in df.groupby(["revenue_year", "stock_id"]):
         # 計算當年累積（逐月累加）
@@ -133,12 +133,15 @@ def calculate_yoy(df):
             
             last_year_data = df[(df["revenue_year"] == last_year) & (df["revenue_month"] <= month)]
             
-            if len(last_year_data) > 0:
+            required_months = set(range(1, int(month)+1))
+            current_complete = required_months.issubset(set(group['revenue_month'].astype(int)))
+            previous_complete = required_months.issubset(set(last_year_data['revenue_month'].astype(int)))
+            if current_complete and previous_complete:
                 last_cumulative = last_year_data["revenue"].sum()
                 df.at[idx, "last_year_cumulative"] = last_cumulative
                 
                 current_cumulative = df.at[idx, "cumulative_revenue"]
-                if last_cumulative > 0:
+                if last_cumulative > 0 and pd.notna(current_cumulative):
                     cumulative_yoy = ((current_cumulative - last_cumulative) / last_cumulative) * 100
                     df.at[idx, "cumulative_yoy"] = cumulative_yoy
     
@@ -164,11 +167,11 @@ def save_to_database(df):
             int(row["revenue_year"]),
             int(row["revenue_month"]),
             float(row["revenue"]),
-            float(row.get("cumulative_revenue", 0)),
-            float(row.get("yoy_growth", 0)),
-            float(row.get("cumulative_yoy", 0)),
-            float(row.get("last_year_revenue", 0)),
-            float(row.get("last_year_cumulative", 0)),
+            float(row['cumulative_revenue']) if pd.notna(row.get('cumulative_revenue')) else None,
+            float(row['yoy_growth']) if pd.notna(row.get('yoy_growth')) else None,
+            float(row['cumulative_yoy']) if pd.notna(row.get('cumulative_yoy')) else None,
+            float(row['last_year_revenue']) if pd.notna(row.get('last_year_revenue')) else None,
+            float(row['last_year_cumulative']) if pd.notna(row.get('last_year_cumulative')) else None,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
     

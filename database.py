@@ -1,12 +1,13 @@
 # database.py
 import lzma
+import os
 import shutil
 import sqlite3
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DB_PATH = PROJECT_DIR / "stock_data.db"
-DB_XZ_PATH = PROJECT_DIR / "stock_data.db.xz"
+DB_PATH = Path(os.environ.get("STOCK_DB_PATH", str(PROJECT_DIR / "stock_data.db"))).resolve()
+DB_XZ_PATH = Path(str(DB_PATH) + ".xz")
 DB_NAME = str(DB_PATH)
 
 
@@ -46,7 +47,8 @@ def init_db():
         beta REAL, market_cap REAL, capital REAL,
         
         -- 成長與獲利
-        revenue_growth REAL, revenue_ttm REAL, revenue_streak INTEGER, eps_growth REAL,
+        revenue_growth REAL, revenue_monthly_yoy REAL, revenue_ytd_yoy REAL,
+        revenue_period TEXT, revenue_ttm REAL, revenue_streak INTEGER, eps_growth REAL,
         gross_margin REAL, operating_margin REAL, pretax_margin REAL, net_margin REAL,
         
         -- 技術面

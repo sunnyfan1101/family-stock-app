@@ -62,18 +62,18 @@ def fetch_fundamentals_finmind(stock_id, close_price=0):
             - market_cap (float): 市值（暫無，回傳 0）
     """
     result = {
-        'eps': 0,
-        'eps_growth': 0,
-        'pe_ratio': 0,
-        'yield_rate': 0,
-        'gross_margin': 0,
-        'operating_margin': 0,
-        'pretax_margin': 0,
-        'net_margin': 0,
-        'revenue_growth': 0,
-        'pb_ratio': 0,
-        'beta': 0,
-        'market_cap': 0
+        'eps': None,
+        'eps_growth': None,
+        'pe_ratio': None,
+        'yield_rate': None,
+        'gross_margin': None,
+        'operating_margin': None,
+        'pretax_margin': None,
+        'net_margin': None,
+        'revenue_growth': None,
+        'pb_ratio': None,
+        'beta': None,
+        'market_cap': None
     }
 
     try:
@@ -92,9 +92,13 @@ def fetch_fundamentals_finmind(stock_id, close_price=0):
 
         resp_fs = requests.get(FINMIND_API_URL, params=params_fs, timeout=15)
 
-        if resp_fs.status_code == 200:
-            data_fs = resp_fs.json().get('data', [])
+        if resp_fs.status_code != 200:
+            return None
+        data_fs = resp_fs.json().get('data', [])
+        if not data_fs:
+            return None
 
+        if resp_fs.status_code == 200:
             if data_fs:
                 df_fs = pd.DataFrame(data_fs)
 
@@ -128,16 +132,18 @@ def fetch_fundamentals_finmind(stock_id, close_price=0):
                     type_values[row['type']] = row['value']
 
                 revenue = type_values.get('Revenue', 0)
-                gross_profit = type_values.get('GrossProfit', 0)
-                operating_income = type_values.get('OperatingIncome', 0)
-                pretax_income = type_values.get('PreTaxIncome', 0)
-                net_income = type_values.get('IncomeAfterTaxes', 0)
+                gross_profit = type_values.get('GrossProfit')
+                operating_income = type_values.get('OperatingIncome')
+                pretax_income = type_values.get('PreTaxIncome')
+                net_income = type_values.get('IncomeAfterTaxes')
 
                 if revenue != 0:
-                    result['gross_margin'] = (gross_profit / revenue) * 100
-                    result['operating_margin'] = (operating_income / revenue) * 100
-                    result['pretax_margin'] = (pretax_income / revenue) * 100
-                    result['net_margin'] = (net_income / revenue) * 100
+                    for key, amount in (
+                        ('gross_margin', gross_profit), ('operating_margin', operating_income),
+                        ('pretax_margin', pretax_income), ('net_margin', net_income),
+                    ):
+                        if amount is not None:
+                            result[key] = (amount / revenue) * 100
 
                 # --- 營收成長率（最新季 vs 去年同期）---
                 if revenue != 0:
@@ -177,13 +183,16 @@ def fetch_fundamentals_finmind(stock_id, close_price=0):
                     result['yield_rate'] = (cash_div / close_price) * 100
 
         # ========== 3. 計算本益比 ==========
-        if close_price > 0 and result['eps'] > 0:
+        if close_price > 0 and result['eps'] is not None and result['eps'] > 0:
             result['pe_ratio'] = close_price / result['eps']
 
     except Exception as e:
         print(f"⚠️ {stock_id} FinMind 基本面抓取失敗: {e}")
+        return None
 
-    return result
+    return result if any(result[k] is not None for k in (
+        'eps', 'gross_margin', 'operating_margin', 'pretax_margin',
+        'net_margin', 'revenue_growth')) else None
 
 
 # ============================================================

@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from io import StringIO
 import database
 import numpy as np
+import os
+from data_correctness import close_returns, refresh_price_summary
 
 # ★★★ 匯入預先計算模組 ★★★
 try:
@@ -50,6 +52,7 @@ def calculate_precompute_for_stock(cursor, stock_id):
     try:
         # 使用外部連線，不建立新連線（避免 SQLite 鎖衝突）
         conn = cursor.connection
+        refresh_price_summary(conn, stock_id)
 
         # 計算位階
         position_1y, position_2y = precompute_position(stock_id, conn)
@@ -75,12 +78,7 @@ def calculate_precompute_for_stock(cursor, stock_id):
                 last_updated = ?
             WHERE stock_id = ?
         ''', (
-            position_1y if position_1y is not None else 0,
-            position_2y if position_2y is not None else 0,
-            bias_20 if bias_20 is not None else 0,
-            bias_60 if bias_60 is not None else 0,
-            vol_spike if vol_spike is not None else 0,
-            consolidation_log if consolidation_log is not None else 0,
+            position_1y, position_2y, bias_20, bias_60, vol_spike, consolidation_log,
             datetime.now().strftime('%Y-%m-%d'),
             stock_id
         ))
@@ -101,22 +99,11 @@ def run_batch_precompute(stock_ids=None):
     """
     if PRECOMPUTE_AVAILABLE:
         print("\n🚀 開始批次預先計算...")
-        if stock_ids:
-            print(f"   指定更新 {len(stock_ids)} 檔股票")
-            for sid in stock_ids:
-                try:
-                    # 使用現有的 calculate_precompute_for_stock 函數
-                    # 但需要資料庫連線，這裡簡化處理
-                    pass
-                except Exception as e:
-                    print(f"   ⚠️ {sid} 預先計算失敗: {e}")
-            update_weekly_ma()
-        else:
-            update_precomputed_metrics()
-            update_weekly_ma()
+        update_precomputed_metrics()
+        update_weekly_ma()
         print("✅ 批次預先計算完成!")
     else:
-        print("⚠️ 預先計算模組未載入,跳過批次計算")
+        raise RuntimeError("預先計算模組未載入，資料不可發布")
 
 
 # --- 1. 取得股票清單 ---
@@ -185,6 +172,8 @@ def get_tw_stock_list():
 
     # 4. 斷網自救機制
     if not stock_list:
+        if os.environ.get("STOCK_REQUIRE_FRESH_UNIVERSE") == "1":
+            raise RuntimeError("交易所清單取得失敗；拒絕以舊名單發布每日更新")
         print("⚠️ 無法從網路取得清單,改使用資料庫既有名單進行更新。")
         conn = database.get_connection()
         try:
@@ -254,7 +243,7 @@ def get_db_history_data(stock_id, days=600):
     # 使用獨立連線，避免關閉主連線
     conn = database.get_connection()
     try:
-        sql = f"SELECT date, close, volume FROM daily_prices WHERE stock_id = ? ORDER BY date DESC LIMIT {days}"
+        sql = f"SELECT date, close, volume FROM daily_prices WHERE stock_id = ? AND close>0 ORDER BY date DESC LIMIT {days}"
         df = pd.read_sql(sql, conn, params=(stock_id,))
         if df.empty: return pd.DataFrame()
         df['date'] = pd.to_datetime(df['date'])
@@ -285,6 +274,8 @@ def update_stock_data(progress_bar=None, status_text=None):
     # 💡 [新增] 讀取啟動參數，判斷是否為財報季強制更新
     import sys
     force_financials = '--force-financials' in sys.argv
+    if force_financials and not FINMIND_FUNDAMENTAL_AVAILABLE:
+        raise RuntimeError('FinMind 基本面模組未載入，停止強制財報更新')
 
     # ★ 智慧篩選與快取預載：一次性撈取現有財報，避免被洗成 0
     cursor.execute('''
@@ -317,7 +308,7 @@ def update_stock_data(progress_bar=None, status_text=None):
     # 💡 [搬移並優化] 發車前先讀取記憶卡 (只要讀一次！)
     # ==========================================
     import os, time
-    done_file = "finmind_done.txt"
+    done_file = os.environ.get("STOCK_FINMIND_DONE_PATH", "finmind_done.txt")
     forced_done = set()
 
     if force_financials:
@@ -331,6 +322,9 @@ def update_stock_data(progress_bar=None, status_text=None):
                     forced_done = set(f.read().splitlines())
 
     # --- Part A: 逐檔更新股票 ---
+    stock_errors = []
+    today_fetched = set()
+    today_text = datetime.now().strftime('%Y-%m-%d')
     for i, stock in enumerate(all_stocks):
         stock_id = stock['id']
 
@@ -381,6 +375,9 @@ def update_stock_data(progress_bar=None, status_text=None):
             except:
                 new_hist = pd.DataFrame()
 
+            if not new_hist.empty:
+                new_hist = new_hist[pd.to_numeric(new_hist['Close'], errors='coerce') > 0].copy()
+
             # --- 資料拼接 ---
             if last_date_str:
                 old_df = get_db_history_data(stock_id, days=600)
@@ -408,6 +405,8 @@ def update_stock_data(progress_bar=None, status_text=None):
 
             # --- 計算指標 ---
             if combined_close.empty: continue
+            combined_close = combined_close.sort_index()
+            combined_volume = combined_volume.sort_index()
 
             # 均量
             if not combined_volume.empty:
@@ -438,7 +437,7 @@ def update_stock_data(progress_bar=None, status_text=None):
                 new_hist['MA5'] = full_ma5.loc[new_hist.index]
                 new_hist['MA20'] = full_ma20.loc[new_hist.index]
                 new_hist['MA60'] = full_ma60.loc[new_hist.index]
-                new_hist['Change_Pct'] = new_hist['Close'].pct_change(fill_method=None) * 100
+                new_hist['Change_Pct'] = close_returns(combined_close).reindex(new_hist.index)
 
             # --- 抓取基本面 (FinMind 核心替換版) ---
             # 💡 防護網:取得最新收盤價,若無則從資料庫撈取舊價或設為 0
@@ -461,7 +460,7 @@ def update_stock_data(progress_bar=None, status_text=None):
             # 💡 [新增] 財報季記憶卡機制 (防止強制模式無限重複)
             # ==========================================
             import os, time
-            done_file = "finmind_done.txt"
+            done_file = os.environ.get("STOCK_FINMIND_DONE_PATH", "finmind_done.txt")
             forced_done = set()
 
             if force_financials:
@@ -483,29 +482,26 @@ def update_stock_data(progress_bar=None, status_text=None):
                 needs_update = (db_eps == 0)       # 日常模式：EPS 是空值才抓！
 
             # 綜合判斷：不是 ETF + 需要更新 + 額度還夠 (安全值 580)
-            need_finmind = (not is_etf) and needs_update and (finmind_api_calls <= 580)
+            need_finmind = FINMIND_FUNDAMENTAL_AVAILABLE and (not is_etf) and needs_update and (finmind_api_calls <= 580)
 
+            # 缺值與抓取失敗不可用 0 覆蓋既有有效財報。
+            finmind_data = {
+                'eps': db_eps,
+                'eps_growth': curr_existing.get('eps_growth', 0),
+                'gross_margin': curr_existing.get('gross_margin', 0),
+                'operating_margin': curr_existing.get('operating_margin', 0),
+                'pretax_margin': curr_existing.get('pretax_margin', 0),
+                'net_margin': curr_existing.get('net_margin', 0),
+                'yield_rate': curr_existing.get('yield_rate', 0),
+                'pe_ratio': (close_price / db_eps) if db_eps > 0 and close_price > 0 else 0,
+            }
+            finmind_succeeded = False
             if need_finmind:
-                finmind_data = fetch_fundamentals_finmind(stock_id, close_price)
-                finmind_api_calls += 2 # 每個 stock 呼叫兩次 API (財報+股利)
-
-                # 📝 把抓過的股票寫進記憶卡，下個小時的排程就會自動跳過它！
-                if force_financials:
-                    with open(done_file, 'a') as f:
-                        f.write(f"{stock_id}\n")
-            else:
-                # 🛡️ 防護網：沿用資料庫舊數據，絕對不洗白！
-                finmind_data = {
-                    'eps': db_eps,
-                    'eps_growth': curr_existing.get('eps_growth', 0),
-                    'gross_margin': curr_existing.get('gross_margin', 0),
-                    'operating_margin': curr_existing.get('operating_margin', 0),
-                    'pretax_margin': curr_existing.get('pretax_margin', 0),
-                    'net_margin': curr_existing.get('net_margin', 0),
-                    'revenue_growth': curr_existing.get('revenue_growth', 0),
-                    'yield_rate': curr_existing.get('yield_rate', 0),
-                    'pe_ratio': (close_price / db_eps) if db_eps > 0 and close_price > 0 else 0
-                }
+                fresh_fundamentals = fetch_fundamentals_finmind(stock_id, close_price)
+                finmind_api_calls += 2
+                if fresh_fundamentals is not None:
+                    finmind_data.update({k: v for k, v in fresh_fundamentals.items() if v is not None})
+                    finmind_succeeded = True
 
             eps = finmind_data.get('eps', 0)
             pe = finmind_data.get('pe_ratio', 0)
@@ -515,9 +511,9 @@ def update_stock_data(progress_bar=None, status_text=None):
             pretax_margin_pct = finmind_data.get('pretax_margin', 0)
             net_margin_pct = finmind_data.get('net_margin', 0)
             eps_growth_pct = finmind_data.get('eps_growth', 0)
-            revenue_growth_pct = finmind_data.get('revenue_growth', 0)
-
-            revenue_ttm = revenue_growth_pct
+            # 月營收完成後統一由 sync_revenue 計算；不可寫入季度成長率冒充 TTM。
+            revenue_growth_pct = None
+            revenue_ttm = None
 
             if force_financials or needs_update:
                 try:
@@ -541,7 +537,7 @@ def update_stock_data(progress_bar=None, status_text=None):
             cursor.execute('''
                 UPDATE stocks
                 SET eps=?, pe_ratio=?, pb_ratio=?, yield_rate=?, beta=?, market_cap=?,
-                    revenue_growth=?, revenue_ttm=?, revenue_streak=?, eps_growth=?,
+                    revenue_growth=COALESCE(?,revenue_growth), revenue_ttm=COALESCE(?,revenue_ttm), revenue_streak=?, eps_growth=?,
                     year_high=?, year_low=?, capital=?, vol_ma_5=?, vol_ma_20=?,
                     year_high_2y=?, year_low_2y=?, gross_margin=?,
                     operating_margin=?, pretax_margin=?, net_margin=?,
@@ -573,9 +569,6 @@ def update_stock_data(progress_bar=None, status_text=None):
                       operating_margin_pct, pretax_margin_pct, net_margin_pct, consolidation_days, consolidation_days_20,
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
-            # --- ★★★ 預先計算指標 (每次更新後立即計算) ★★★
-            calculate_precompute_for_stock(cursor, stock_id)
-
             # --- 寫入資料庫 (daily_prices) ---
             if not new_hist.empty:
                 data_to_insert = []
@@ -584,20 +577,34 @@ def update_stock_data(progress_bar=None, status_text=None):
                     ma5 = row['MA5'] if pd.notna(row['MA5']) else None
                     ma20 = row['MA20'] if pd.notna(row['MA20']) else None
                     ma60 = row['MA60'] if pd.notna(row['MA60']) else None
-                    change = row['Change_Pct'] if pd.notna(row['Change_Pct']) else 0
+                    change = row['Change_Pct'] if pd.notna(row['Change_Pct']) else None
 
                     data_to_insert.append((stock_id, date_str, row['Open'], row['High'], row['Low'], row['Close'], row['Volume'], change, ma5, ma20, ma60))
 
                 cursor.executemany('''
-                    INSERT OR REPLACE INTO daily_prices
+                    INSERT INTO daily_prices
                     (stock_id, date, open, high, low, close, volume, change_pct, ma_5, ma_20, ma_60)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(stock_id, date) DO UPDATE SET
+                        open=excluded.open, high=excluded.high, low=excluded.low,
+                        close=excluded.close, volume=excluded.volume,
+                        change_pct=excluded.change_pct, ma_5=excluded.ma_5,
+                        ma_20=excluded.ma_20, ma_60=excluded.ma_60
                 ''', data_to_insert)
 
+            if PRECOMPUTE_AVAILABLE and not calculate_precompute_for_stock(cursor, stock_id):
+                raise RuntimeError('precompute failed')
             conn.commit()
+            if not new_hist.empty and any(day.strftime('%Y-%m-%d') == today_text for day in new_hist.index):
+                today_fetched.add(stock_id)
+            if force_financials and finmind_succeeded:
+                with open(done_file, 'a') as f:
+                    f.write(f"{stock_id}\n")
 
         except Exception as e:
+            conn.rollback()
             print(f"\n❌ {stock_id} 發生錯誤: {e}")
+            stock_errors.append(stock_id)
             continue
 
         time.sleep(0.2)
@@ -631,16 +638,18 @@ def update_stock_data(progress_bar=None, status_text=None):
 
             # 2. 迴圈逐日計算並補齊
             for target_date in missing_dates:
-                # 這裡使用當天收盤價與 stocks 表的年低點做計算
+                # 只用當時已存在的最近 250 筆交易資料，避免引用今天的高低點。
                 sql_stat_position = """
-                SELECT COUNT(*)
-                FROM stocks s
-                JOIN daily_prices d ON s.stock_id = d.stock_id
-                WHERE d.date = ?
-                AND (s.year_high - s.year_low) > 0
-                AND (d.close - s.year_low) / (s.year_high - s.year_low) <= 0.01
+                WITH point_in_time AS (
+                    SELECT stock_id,date,close,
+                        MAX(close) OVER (PARTITION BY stock_id ORDER BY date ROWS 249 PRECEDING) hi,
+                        MIN(close) OVER (PARTITION BY stock_id ORDER BY date ROWS 249 PRECEDING) lo
+                    FROM daily_prices WHERE date <= ?
+                )
+                SELECT COUNT(*) FROM point_in_time
+                WHERE date=? AND hi>lo AND (close-lo)/(hi-lo)<=0.01
                 """
-                cursor.execute(sql_stat_position, (target_date,))
+                cursor.execute(sql_stat_position, (target_date,target_date))
                 low_count = cursor.fetchone()[0]
 
                 # 寫入資料庫
@@ -705,10 +714,17 @@ def update_stock_data(progress_bar=None, status_text=None):
                     shutil.copyfileobj(f_in, f_out)
             print("✅ 壓縮完成:產生 stock_data.db.xz")
         else:
-            print("❌ 找不到 stock_data.db,無法壓縮")
+            raise FileNotFoundError(database.DB_PATH)
 
     except Exception as e:
-        print(f"⚠️ 瘦身或壓縮失敗: {e}")
+        raise RuntimeError(f"瘦身或壓縮失敗: {e}") from e
+
+    if stock_errors:
+        print(f"⚠️ 個股處理失敗 {len(stock_errors)} 檔，樣本: {stock_errors[:20]}")
+        raise RuntimeError("有個股交易資料處理失敗，候選資料不可發布")
+    if not force_financials and len(today_fetched) < max(1500, int(len(all_stocks) * 0.85)):
+        raise RuntimeError(f"本次來源僅抓到 {len(today_fetched)} 檔今日行情，候選資料不可發布")
+    print(f"本次新鮮行情覆蓋 {len(today_fetched)}/{len(all_stocks)} 檔")
 
 if __name__ == "__main__":
     update_stock_data()
