@@ -177,18 +177,32 @@ def save_to_database(df):
     
     # 批量寫入
     cursor.executemany("""
-        INSERT OR REPLACE INTO monthly_revenue 
+        INSERT INTO monthly_revenue
         (stock_id, year, month, revenue, cumulative_revenue, yoy_growth, cumulative_yoy, 
          last_year_revenue, last_year_cumulative, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stock_id, year, month) DO UPDATE SET
+            revenue=excluded.revenue,
+            cumulative_revenue=excluded.cumulative_revenue,
+            yoy_growth=excluded.yoy_growth,
+            cumulative_yoy=excluded.cumulative_yoy,
+            last_year_revenue=excluded.last_year_revenue,
+            last_year_cumulative=excluded.last_year_cumulative,
+            updated_at=excluded.updated_at
+        WHERE excluded.revenue IS NOT monthly_revenue.revenue
+           OR excluded.cumulative_revenue IS NOT monthly_revenue.cumulative_revenue
+           OR excluded.yoy_growth IS NOT monthly_revenue.yoy_growth
+           OR excluded.cumulative_yoy IS NOT monthly_revenue.cumulative_yoy
+           OR excluded.last_year_revenue IS NOT monthly_revenue.last_year_revenue
+           OR excluded.last_year_cumulative IS NOT monthly_revenue.last_year_cumulative
     """, data_to_insert)
     
     conn.commit()
-    inserted = cursor.rowcount
+    changed = cursor.rowcount
     conn.close()
     
-    print(f"✅ 成功寫入 {len(data_to_insert)} 筆營收資料")
-    return len(data_to_insert)
+    print(f"✅ 營收來源回傳 {len(data_to_insert)} 筆，真正新增／變更 {changed} 筆")
+    return changed
 
 
 def update_monthly_revenue_for_stock(stock_id, start_date="2024-01-01"):

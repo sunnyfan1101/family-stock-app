@@ -41,5 +41,7 @@ snapshot, packs that exact DB, and uses the existing validation/promotion
 gate. Its staged copy uses SQLite backup with `--copy-only`, avoiding the
 2.6-million-row historical rebuild. The existing quarterly
 `--force-financials` mode is not yet separated.
+FinMind may replay old months for stocks missing the expected latest month;
+unchanged historical rows no longer count as new data or refresh timestamps.
 Do not switch cron until the Phase 2 normal-trading-day update and report
 checks pass, and the split runner has been tested against a disposable DB.

@@ -5,7 +5,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
 import fetch_data
+import fetch_revenue
 import revenue_only
 import verify_copy
 
@@ -27,6 +29,29 @@ class EarlyDailyGateTests(unittest.TestCase):
 
 
 class RevenueOnlyTests(unittest.TestCase):
+    def test_historical_finmind_replay_is_not_counted_as_new(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / 'revenue.db'
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('''CREATE TABLE monthly_revenue (
+                    stock_id TEXT, year INTEGER, month INTEGER, revenue REAL,
+                    cumulative_revenue REAL, yoy_growth REAL, cumulative_yoy REAL,
+                    last_year_revenue REAL, last_year_cumulative REAL,
+                    updated_at TEXT, PRIMARY KEY (stock_id, year, month))''')
+            row = dict(stock_id='2330', revenue_year=2026, revenue_month=9,
+                       revenue=100.0, cumulative_revenue=900.0,
+                       yoy_growth=None, cumulative_yoy=None,
+                       last_year_revenue=None, last_year_cumulative=None)
+            with patch.object(fetch_revenue, 'get_connection',
+                              side_effect=lambda: sqlite3.connect(db_path)):
+                self.assertEqual(fetch_revenue.save_to_database(pd.DataFrame([row])), 1)
+                self.assertEqual(fetch_revenue.save_to_database(pd.DataFrame([row])), 0)
+                row['revenue'] = 101.0
+                self.assertEqual(fetch_revenue.save_to_database(pd.DataFrame([row])), 1)
+            with sqlite3.connect(db_path) as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM monthly_revenue').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT revenue FROM monthly_revenue').fetchone()[0], 101.0)
+
     def test_stage_copy_only_preserves_source_and_skips_rebuild(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'live.db'
