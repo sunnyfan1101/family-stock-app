@@ -2,10 +2,14 @@ venv/
 .venv/
 __pycache__/
 stock_data.db
+stock_data.db.previous*
+stock_data.db.bundle.lock
 .stock-staging/
 .env
 *.log
 *_token.txt
 finmind_done.txt
+.financial-batch-state.json
+.financial-daily-budget.json
 news_cache.txt
 EOF

@@ -13,6 +13,7 @@ from datetime import date, datetime
 import requests
 
 import database
+from financial_cursor import reserve_requests, save as write_progress
 from fetch_fundamentals_finmind import FINMIND_API_URL, FINMIND_TOKEN
 from fetch_precompute import refresh_latest_stock_snapshot
 
@@ -147,15 +148,23 @@ def sync_quarterly_summary(connection, stock_id):
         )
 
 
-def update_financials_only(limit=200, offset=0, start_date="2024-01-01", fetcher=fetch_reports):
+def update_financials_only(limit=150, offset=0, start_date="2024-01-01",
+                           fetcher=fetch_reports, progress_path=None, budget_path=None):
     if limit < 1 or limit > 250 or offset < 0:
         raise ValueError("batch limit must be 1..250 and offset nonnegative")
     connection = database.get_connection()
     try:
+        total = connection.execute(
+            "SELECT COUNT(*) FROM stocks WHERE stock_id NOT LIKE '00%'"
+        ).fetchone()[0]
+        effective_offset = 0 if offset >= total else offset
         ids = [row[0] for row in connection.execute(
             "SELECT stock_id FROM stocks WHERE stock_id NOT LIKE '00%' "
-            "ORDER BY stock_id LIMIT ? OFFSET ?", (limit, offset)
+            "ORDER BY stock_id LIMIT ? OFFSET ?", (limit, effective_offset)
         )]
+        next_offset = 0 if effective_offset + len(ids) >= total else effective_offset + len(ids)
+        if budget_path is not None:
+            reserve_requests(budget_path, len(ids))
         changed = 0
         changed_ids = []
         for stock_id in ids:
@@ -175,19 +184,28 @@ def update_financials_only(limit=200, offset=0, start_date="2024-01-01", fetcher
         raise
     finally:
         connection.close()
+    batch = {"offset": offset, "next_offset": next_offset,
+             "checked": len(ids), "total": total}
     if not changed:
+        if progress_path is not None:
+            write_progress(progress_path, batch)
         print(f"STOCK_FINANCIALS_NO_CHANGE checked={len(ids)} offset={offset}")
         return False
     with database.DB_PATH.open("rb") as source, lzma.open(database.DB_XZ_PATH, "wb", preset=6) as target:
         shutil.copyfileobj(source, target, length=1024 * 1024)
+    if progress_path is not None:
+        write_progress(progress_path, batch)
     print(f"STOCK_FINANCIALS_UPDATED rows={changed} checked={len(ids)} offset={offset}")
     return True
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--limit", type=int, default=150)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--start-date", default="2024-01-01")
+    parser.add_argument("--progress-path")
+    parser.add_argument("--budget-path")
     args = parser.parse_args()
-    update_financials_only(args.limit, args.offset, args.start_date)
+    update_financials_only(args.limit, args.offset, args.start_date,
+                           progress_path=args.progress_path, budget_path=args.budget_path)
