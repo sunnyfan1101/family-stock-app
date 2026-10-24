@@ -26,13 +26,38 @@ export STOCK_FINMIND_DONE_PATH="$STAGE_DIR/finmind_done.txt"
 export STOCK_REQUIRE_FRESH_UNIVERSE=1
 if [ -f finmind_done.txt ]; then cp finmind_done.txt "$STOCK_FINMIND_DONE_PATH"; fi
 REVENUE_ONLY=0
+FINANCIALS_ONLY=0
+LEGACY_FORCED_FINANCIALS=0
 for arg in "$@"; do
     if [ "$arg" = "--revenue-only" ]; then REVENUE_ONLY=1; fi
+    if [ "$arg" = "--financials-only" ]; then FINANCIALS_ONLY=1; fi
+    if [ "$arg" = "--force-financials" ]; then LEGACY_FORCED_FINANCIALS=1; fi
 done
+if [ "$REVENUE_ONLY" -eq 1 ] && [ "$FINANCIALS_ONLY" -eq 1 ]; then
+    echo "Choose one staged update mode" >&2
+    exit 2
+fi
+if [ "$REVENUE_ONLY" -eq 0 ] && [ "$FINANCIALS_ONLY" -eq 0 ] && [ "$LEGACY_FORCED_FINANCIALS" -eq 0 ]; then
+    set +e
+    TZ=Asia/Taipei "$PYTHON_BIN" market_session.py --date "$(TZ=Asia/Taipei date +%F)" --closure-file "$PROJECT_DIR/market_closures.json"
+    SESSION_RESULT=$?
+    set -e
+    if [ "$SESSION_RESULT" -eq 10 ]; then
+        echo "STOCK_UPDATE_SKIPPED: documented market closure/weekend"
+        exit 0
+    fi
+    if [ "$SESSION_RESULT" -ne 0 ]; then exit "$SESSION_RESULT"; fi
+fi
 COPY_ARGS=()
-if [ "$REVENUE_ONLY" -eq 1 ]; then COPY_ARGS=(--copy-only); fi
+if [ "$REVENUE_ONLY" -eq 1 ] || [ "$FINANCIALS_ONLY" -eq 1 ]; then COPY_ARGS=(--copy-only); fi
 "$PYTHON_BIN" verify_copy.py --source "$PROJECT_DIR/stock_data.db" --output "$STOCK_DB_PATH" "${COPY_ARGS[@]}"
-if [ "$REVENUE_ONLY" -eq 1 ]; then
+if [ "$FINANCIALS_ONLY" -eq 1 ]; then
+    "$PYTHON_BIN" financials_only.py --limit "${STOCK_FINANCIALS_LIMIT:-200}" --offset "${STOCK_FINANCIALS_OFFSET:-0}"
+    if [ ! -f "$STOCK_DB_PATH.xz" ]; then
+        echo "STOCK_UPDATE_SKIPPED: quarterly financial reports unchanged"
+        exit 0
+    fi
+elif [ "$REVENUE_ONLY" -eq 1 ]; then
     "$PYTHON_BIN" revenue_only.py
     if [ ! -f "$STOCK_DB_PATH.xz" ]; then
         echo "STOCK_UPDATE_SKIPPED: monthly revenue unchanged"
@@ -43,7 +68,7 @@ else
 fi
 REQUIRE_TODAY=(--require-today)
 for arg in "$@"; do
-    if [ "$arg" = "--force-financials" ] || [ "$arg" = "--revenue-only" ]; then REQUIRE_TODAY=(); fi
+    if [ "$arg" = "--force-financials" ] || [ "$arg" = "--revenue-only" ] || [ "$arg" = "--financials-only" ]; then REQUIRE_TODAY=(); fi
 done
 "$PYTHON_BIN" stock_release.py validate "$STOCK_DB_PATH" --live "$PROJECT_DIR/stock_data.db" "${REQUIRE_TODAY[@]}"
 "$PYTHON_BIN" stock_release.py promote "$STOCK_DB_PATH" --live "$PROJECT_DIR/stock_data.db" "${REQUIRE_TODAY[@]}"

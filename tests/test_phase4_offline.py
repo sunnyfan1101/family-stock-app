@@ -10,6 +10,7 @@ import pandas as pd
 
 from data_correctness import weekly_averages
 from phase4_offline import SHARDS, assemble, refresh_weekly_changed, split, verify_source
+from phase4_bundle import build_public_bundle, install_public_bundle, validate_public_bundle
 
 
 def make_schema(connection):
@@ -102,6 +103,66 @@ class OfflinePartitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
             assemble(parts, self.root / "bad-assembly.db")
 
+    def test_public_bundle_install_keeps_private_data_local_and_pins_versions(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        bundle = self.root / "public"
+        manifest = build_public_bundle(parts, bundle)
+        self.assertEqual(set(manifest["shards"]), {"prices", "market"})
+        self.assertNotIn("private", (bundle / "bundle.json").read_text())
+        self.assertNotIn("local", (bundle / "bundle.json").read_text())
+        self.assertFalse((bundle / "local.db").exists())
+        self.assertNotIn(b"private", (bundle / "prices.db").read_bytes())
+        self.assertNotIn(b"private", (bundle / "market.db").read_bytes())
+        target = self.root / "installed.db"
+        with sqlite3.connect(target) as db:
+            db.execute("CREATE TABLE old_marker(value TEXT)")
+            db.execute("INSERT INTO old_marker VALUES ('recoverable')")
+        identity = install_public_bundle(bundle, parts / "local.db", target)
+        self.assertEqual(identity, manifest["bundle_id"])
+        self.assertTrue((self.root / "installed.db.previous").exists())
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT note FROM watchlist").fetchone()[0], "private")
+            self.assertEqual(db.execute("SELECT bundle_id FROM _bundle_release").fetchone()[0], identity)
+        with sqlite3.connect(self.root / "installed.db.previous") as db:
+            self.assertEqual(db.execute("SELECT value FROM old_marker").fetchone()[0], "recoverable")
+
+    def test_public_bundle_rejects_corruption_and_rolls_back_failed_swap(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        bundle = self.root / "public"
+        build_public_bundle(parts, bundle)
+        target = self.root / "installed.db"
+        with sqlite3.connect(target) as db:
+            db.execute("CREATE TABLE old_marker(value TEXT)")
+            db.execute("INSERT INTO old_marker VALUES ('old')")
+        def fail():
+            raise RuntimeError("injected interruption")
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            install_public_bundle(bundle, parts / "local.db", target, after_swap=fail)
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT value FROM old_marker").fetchone()[0], "old")
+        with (bundle / "prices.db").open("ab") as stream:
+            stream.write(b"tampered")
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            validate_public_bundle(bundle)
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT value FROM old_marker").fetchone()[0], "old")
+
+    def test_public_bundle_refuses_active_wal_sidecar(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        bundle = self.root / "public"
+        build_public_bundle(parts, bundle)
+        target = self.root / "installed.db"
+        with sqlite3.connect(target) as db:
+            db.execute("CREATE TABLE marker(value INTEGER)")
+        Path(str(target) + "-wal").touch()
+        with self.assertRaisesRegex(RuntimeError, "WAL sidecars"):
+            install_public_bundle(bundle, parts / "local.db", target)
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM marker").fetchone()[0], 0)
+
 
 class IncrementalWeeklyTests(unittest.TestCase):
     def setUp(self):
@@ -173,6 +234,39 @@ class IncrementalWeeklyTests(unittest.TestCase):
                 "SELECT weekly_ma_5 FROM daily_prices WHERE stock_id='A' AND date=?",
                 (changed,),
             ).fetchone()[0], None)
+        self._compare(baseline, incremental)
+
+    def test_multiday_backfill_cross_week_and_week_start_match_full(self):
+        baseline, incremental = self._copies()
+        monday = pd.Timestamp(self.last).to_period("W").start_time
+        first_change = (monday - pd.Timedelta(days=18)).strftime("%Y-%m-%d")
+        for path in (baseline, incremental):
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE daily_prices SET close=close+30 WHERE stock_id='A' AND date=?", (first_change,))
+                db.execute("UPDATE daily_prices SET close=close+40 WHERE stock_id='A' AND date=?",
+                           (monday.strftime("%Y-%m-%d"),))
+                for i in range(1, 4):
+                    day = (self.last + pd.offsets.BDay(i)).strftime("%Y-%m-%d")
+                    db.execute("INSERT INTO daily_prices(stock_id,date,close) VALUES ('A',?,?)",
+                               (day, 250.0 + i))
+        with sqlite3.connect(baseline) as db:
+            full_weekly(db)
+        with sqlite3.connect(incremental) as db:
+            refresh_weekly_changed(db, {"A": first_change})
+        self._compare(baseline, incremental)
+
+    def test_backfilled_missing_price_and_earlier_history_match_full(self):
+        baseline, incremental = self._copies()
+        changed = (self.first + pd.offsets.BDay(15)).strftime("%Y-%m-%d")
+        for path in (baseline, incremental):
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE daily_prices SET close=NULL WHERE stock_id='B' AND date=?", (changed,))
+                db.execute("INSERT INTO daily_prices(stock_id,date,close) VALUES ('A','2026-03-30',88)")
+                db.execute("INSERT INTO daily_prices(stock_id,date,close) VALUES ('A','2026-03-31',89)")
+        with sqlite3.connect(baseline) as db:
+            full_weekly(db)
+        with sqlite3.connect(incremental) as db:
+            refresh_weekly_changed(db, {"A": "2026-03-30", "B": changed})
         self._compare(baseline, incremental)
 
 
