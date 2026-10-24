@@ -3,6 +3,8 @@ import lzma
 import os
 import shutil
 import sqlite3
+import tempfile
+import fcntl
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -13,6 +15,28 @@ DB_NAME = str(DB_PATH)
 
 def ensure_database():
     """Restore the runtime SQLite DB from the GitHub-friendly compressed copy."""
+    bundle_dir = os.environ.get("STOCK_BUNDLE_DIR")
+    bundle_id = os.environ.get("STOCK_BUNDLE_ID")
+    if bundle_dir or bundle_id:
+        if not bundle_dir or not bundle_id:
+            raise ValueError("STOCK_BUNDLE_DIR and STOCK_BUNDLE_ID must be set together")
+        from phase4_bundle import extract_private_shard, install_public_bundle
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with (DB_PATH.parent / (DB_PATH.name + ".bundle.lock")).open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if DB_PATH.exists():
+                with sqlite3.connect(DB_PATH.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+                    try:
+                        current = connection.execute("SELECT bundle_id FROM _bundle_release").fetchone()
+                    except sqlite3.OperationalError:
+                        current = None
+                if current and current[0] == bundle_id:
+                    return
+            with tempfile.TemporaryDirectory(prefix="private-shard-", dir=DB_PATH.parent) as temporary:
+                private = Path(temporary) / "local.db"
+                extract_private_shard(DB_PATH, private)
+                install_public_bundle(bundle_dir, private, DB_PATH, expected_bundle_id=bundle_id)
+        return
     if DB_PATH.exists():
         return
 

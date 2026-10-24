@@ -4,13 +4,17 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import pandas as pd
 
 from data_correctness import weekly_averages
 from phase4_offline import SHARDS, assemble, refresh_weekly_changed, split, verify_source
-from phase4_bundle import build_public_bundle, install_public_bundle, validate_public_bundle
+from phase4_bundle import (build_public_bundle, build_compressed_public_bundle,
+                           install_public_bundle, prepare_public_bundle,
+                           validate_public_bundle)
+import database
 
 
 def make_schema(connection):
@@ -162,6 +166,80 @@ class OfflinePartitionTests(unittest.TestCase):
             install_public_bundle(bundle, parts / "local.db", target)
         with sqlite3.connect(target) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM marker").fetchone()[0], 0)
+
+    def test_compressed_bundle_opt_in_preserves_local_and_rolls_versions(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        bundle = self.root / "compressed"
+        manifest = build_compressed_public_bundle(parts, bundle, {"prices": 0, "market": 0})
+        self.assertEqual(validate_public_bundle(bundle)["bundle_id"], manifest["bundle_id"])
+        self.assertFalse((bundle / "local.db.xz").exists())
+        target = self.root / "app.db"
+        with sqlite3.connect(target) as db:
+            make_schema(db)
+            db.execute("INSERT INTO user_presets VALUES ('private','{}')")
+            db.execute("INSERT INTO watchlist VALUES ('A','private-note')")
+        with patch.object(database, "DB_PATH", target), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": str(bundle),
+                                    "STOCK_BUNDLE_ID": manifest["bundle_id"]}):
+            database.ensure_database()
+            database.ensure_database()
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT note FROM watchlist").fetchone()[0], "private-note")
+            self.assertEqual(db.execute("SELECT bundle_id FROM _bundle_release").fetchone()[0], manifest["bundle_id"])
+        self.assertTrue((self.root / "app.db.previous").exists())
+
+        # A second staged version must preserve local data and keep the old backup.
+        with sqlite3.connect(parts / "market.db") as db:
+            db.execute("UPDATE stocks SET name='New' WHERE stock_id='A'")
+        split_manifest = json.loads((parts / "manifest.json").read_text())
+        from phase4_offline import sha256
+        market = parts / "market.db"
+        split_manifest["shards"]["market"]["sha256"] = sha256(market)
+        split_manifest["shards"]["market"]["bytes"] = market.stat().st_size
+        (parts / "manifest.json").write_text(json.dumps(split_manifest))
+        next_bundle = self.root / "next-bundle"
+        next_manifest = build_compressed_public_bundle(parts, next_bundle, {"prices": 0, "market": 0})
+        with patch.object(database, "DB_PATH", target), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": str(next_bundle),
+                                    "STOCK_BUNDLE_ID": next_manifest["bundle_id"]}):
+            database.ensure_database()
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT name FROM stocks").fetchone()[0], "New")
+            self.assertEqual(db.execute("SELECT note FROM watchlist").fetchone()[0], "private-note")
+        self.assertGreaterEqual(len(list(self.root.glob("app.db.previous*"))), 2)
+
+    def test_compressed_bundle_rejects_bad_release_and_corruption(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        bundle = self.root / "compressed"
+        manifest = build_compressed_public_bundle(parts, bundle, {"prices": 0, "market": 0})
+        target = self.root / "app.db"
+        with patch.object(database, "DB_PATH", target), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": str(bundle),
+                                    "STOCK_BUNDLE_ID": "0" * 64}):
+            with self.assertRaisesRegex(ValueError, "trusted release ID"):
+                database.ensure_database()
+        self.assertFalse(target.exists())
+        with (bundle / "prices.db.xz").open("ab") as archive:
+            archive.write(b"corrupt")
+        with patch.object(database, "DB_PATH", target), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": str(bundle),
+                                    "STOCK_BUNDLE_ID": manifest["bundle_id"]}):
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                database.ensure_database()
+        self.assertFalse(target.exists())
+
+    def test_preparer_uses_consistent_snapshot_and_never_exports_private_table(self):
+        public = self.root / "prepared"
+        manifest = prepare_public_bundle(self.source, public,
+                                         {"prices": 0, "market": 0})
+        self.assertEqual(manifest["bundle_id"], validate_public_bundle(public)["bundle_id"])
+        self.assertEqual({p.name for p in public.iterdir()},
+                         {"prices.db.xz", "market.db.xz", "bundle.json"})
+        with self.assertRaisesRegex(ValueError, "output must not exist"):
+            prepare_public_bundle(self.source, public,
+                                  {"prices": 0, "market": 0})
 
 
 class IncrementalWeeklyTests(unittest.TestCase):
