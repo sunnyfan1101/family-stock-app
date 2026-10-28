@@ -26,6 +26,7 @@ METRICS = {
     "IncomeAfterTaxes": "net_income",
     "EPS": "eps",
 }
+MONETARY_METRICS = set(METRICS.values()) - {"eps"}
 FIELDS = tuple(METRICS.values()) + (
     "gross_margin", "operating_margin", "pretax_margin", "net_margin"
 )
@@ -70,6 +71,11 @@ def fetch_reports(stock_id, start_date="2024-01-01", session=requests):
         numeric = float(value)
         if not (-float("inf") < numeric < float("inf")):
             raise ValueError("non-finite financial value")
+        # FinMind financial-statement amounts are TWD, whereas this DB's
+        # financial_reports monetary columns are explicitly TWD thousands.
+        # EPS is per-share TWD and must not be scaled.
+        if metric in MONETARY_METRICS:
+            numeric /= 1000
         row = periods.setdefault(key, {})
         if metric in row and row[metric] != numeric:
             raise ValueError("conflicting financial report rows")
@@ -114,32 +120,22 @@ def store_reports(connection, stock_id, periods):
 
 
 def sync_quarterly_summary(connection, stock_id):
-    """Update only quarterly-derived stock metrics; monthly revenue is separate."""
+    """Update latest reported margins without replacing adjusted EPS/PE.
+
+    FinMind warns that historical per-share figures may need retrospective
+    adjustment after splits/bonus issues. Summing raw quarters into a TTM EPS
+    would silently replace the existing stock-level EPS and PE with an
+    incomparable value. Keep the raw quarterly EPS in financial_reports until
+    an adjusted, comparable series is available.
+    """
     reports = connection.execute(
-        "SELECT year,quarter,eps,gross_margin,operating_margin,pretax_margin,net_margin "
-        "FROM financial_reports WHERE stock_id=? ORDER BY year DESC,quarter DESC LIMIT 8",
+        "SELECT gross_margin,operating_margin,pretax_margin,net_margin "
+        "FROM financial_reports WHERE stock_id=? ORDER BY year DESC,quarter DESC LIMIT 1",
         (stock_id,),
     ).fetchall()
     if not reports:
         return
-    latest = reports[0]
-    values = dict(zip(("gross_margin", "operating_margin", "pretax_margin", "net_margin"), latest[3:]))
-    quarters = [year * 4 + quarter for year, quarter, *_ in reports]
-    contiguous_four = (len(reports) >= 4 and all(quarters[i] - quarters[i + 1] == 1 for i in range(3)))
-    if contiguous_four and all(row[2] is not None for row in reports[:4]):
-        eps = sum(row[2] for row in reports[:4])
-        values["eps"] = eps
-        if len(reports) >= 8 and all(quarters[i] - quarters[i + 1] == 1 for i in range(7)) \
-                and all(row[2] is not None for row in reports[4:8]):
-            old_eps = sum(row[2] for row in reports[4:8])
-            if old_eps:
-                values["eps_growth"] = (eps - old_eps) / abs(old_eps) * 100
-        close_row = connection.execute(
-            "SELECT close FROM daily_prices WHERE stock_id=? AND close>0 ORDER BY date DESC LIMIT 1",
-            (stock_id,),
-        ).fetchone()
-        if close_row and eps > 0:
-            values["pe_ratio"] = close_row[0] / eps
+    values = dict(zip(("gross_margin", "operating_margin", "pretax_margin", "net_margin"), reports[0]))
     updates = {key: value for key, value in values.items() if value is not None}
     if updates:
         connection.execute(

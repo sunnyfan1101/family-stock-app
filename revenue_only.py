@@ -10,7 +10,8 @@ from fetch_revenue import update_all_stocks
 
 
 def update_revenue_only():
-    rows = update_all_stocks(start_date="2024-01-01", batch_size=50)
+    rows = update_all_stocks(start_date="2024-01-01", batch_size=50,
+                             strict_source=True)
     if rows <= 0:
         print("STOCK_REVENUE_NO_CHANGE: no new monthly revenue; skip publication")
         return False

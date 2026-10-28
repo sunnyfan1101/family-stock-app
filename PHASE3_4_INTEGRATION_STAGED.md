@@ -26,8 +26,14 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   exchange; `market_session.py` plus actual quote coverage remain gates.
 - This 150/day proposal must be checked against the account's actual FinMind
   allocation and other callers before enabling it. Empty valid source data
-  is distinct from API failure. Provider units for monetary quarterly fields
-  still need independent confirmation before presentation as normalized units.
+  is distinct from API failure. FinMind's official statement documentation
+  confirms monetary source values are TWD yuan; the staged archive converts
+  them to the DB's TWD-thousands columns and leaves EPS per-share unchanged.
+  Raw quarterly EPS does not overwrite existing stock-level EPS/PE because
+  historical per-share comparability across splits is not yet established.
+- The independent monthly revenue mode fails the candidate on HTTP 402/403,
+  other source/network failures and per-stock timeouts. A valid empty source
+  response remains no-change. The active daily quote mode is unchanged.
 
 ## Opt-in public-shard App path
 
@@ -73,9 +79,11 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   identical before and after this rehearsal. This tests the local App data
   path, **not** Streamlit Cloud deployment, release provenance, live user
   sessions, or a normal-day cron run.
-- Phase 2 still needs a normal-trading-day automatic quote→validation→push→
-  report success. Phase 3 then needs a staged cron canary, source quota and
-  financial-unit confirmation, and operator-verified official closure list.
+- Phase 2's normal-trading-day automatic quote→validation→push path succeeded
+  on 2026-10-27 and 2026-10-28; 2026-10-27 reports also succeeded. The
+  protected Streamlit Cloud app was not independently verified.
+- Phase 3 still needs a staged cron canary, account-wide source quota review,
+  and operator-verified official closure list.
   Phase 4 needs trusted artifact distribution, full App/Cloud deployment and
   rollback validation, disk/backup retention, and a capacity plan for the
   growing price archive. Do not merge/enable all phases in one cutover.

@@ -21,6 +21,11 @@ class RevenueTimeout(Exception):
     pass
 
 
+class RevenueSourceError(Exception):
+    """A source failure, distinct from a valid empty monthly response."""
+    pass
+
+
 @contextmanager
 def revenue_timeout(seconds, stock_id):
     def _handle_timeout(signum, frame):
@@ -40,7 +45,7 @@ def get_connection():
     return database.get_connection()
 
 
-def fetch_stock_revenue(stock_id, start_date="2024-01-01"):
+def fetch_stock_revenue(stock_id, start_date="2024-01-01", strict_source=False):
     """
     從 FinMind API 抓取單一股票月營收
     """
@@ -65,15 +70,25 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01"):
                 print(f"⚠️ {stock_id} 無資料回傳")
                 return pd.DataFrame()
         elif response.status_code in [402, 403]:
+            if strict_source:
+                raise RevenueSourceError("FinMind monthly API limit reached")
             # 🛑 遇到 402 或 403，不再傻傻睡覺！
             # 直接拋出例外 (Exception)，交給外層主迴圈觸發「優雅下班」機制
             raise Exception(f"API_LIMIT_{response.status_code}")
         else:
+            if strict_source:
+                raise RevenueSourceError("FinMind monthly HTTP error")
             print(f"❌ {stock_id} API 錯誤 (狀態碼 {response.status_code})")
             return pd.DataFrame()
     except RevenueTimeout:
         raise
+    except RevenueSourceError:
+        raise
     except Exception as e:
+        if strict_source:
+            # Requests exceptions can include a URL/query. Do not print or
+            # chain them into cron logs, especially on authenticated setups.
+            raise RevenueSourceError("FinMind monthly source request failed") from None
         # 如果是我們自己拋出的 API_LIMIT 錯誤，直接往上傳遞，不要吃掉！
         if "API_LIMIT" in str(e):
             raise e
@@ -205,13 +220,13 @@ def save_to_database(df):
     return changed
 
 
-def update_monthly_revenue_for_stock(stock_id, start_date="2024-01-01"):
+def update_monthly_revenue_for_stock(stock_id, start_date="2024-01-01", strict_source=False):
     """
     更新單一股票月營收
     """
     print(f"📊 抓取 {stock_id} 月營收...")
     
-    df = fetch_stock_revenue(stock_id, start_date)
+    df = fetch_stock_revenue(stock_id, start_date, strict_source=strict_source)
     
     if df.empty:
         print(f"⚠️ {stock_id} 無資料")
@@ -271,7 +286,8 @@ def get_expected_latest_month():
     return expected_year, expected_month
 
 
-def update_all_stocks(start_date="2024-01-01", batch_size=50, per_stock_timeout=STOCK_TIMEOUT_SECONDS):
+def update_all_stocks(start_date="2024-01-01", batch_size=50,
+                      per_stock_timeout=STOCK_TIMEOUT_SECONDS, strict_source=False):
     """
     更新所有股票月營收
     智能過濾：排除 ETF、跳過已有資料、402/403 休眠機制
@@ -328,9 +344,17 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50, per_stock_timeout=
         
         try:
             with revenue_timeout(per_stock_timeout, stock_id):
-                count = update_monthly_revenue_for_stock(stock_id, start_date)
+                count = update_monthly_revenue_for_stock(
+                    stock_id, start_date, strict_source=strict_source)
             total_inserted += count
         except Exception as e:
+            if strict_source:
+                conn.close()
+                if isinstance(e, RevenueTimeout):
+                    raise RevenueSourceError("FinMind monthly source timed out") from None
+                if isinstance(e, RevenueSourceError):
+                    raise
+                raise RevenueSourceError("monthly revenue update failed") from None
             error_str = str(e)
             # 🛑 捕捉到底層傳上來的 API 上限警告
             if "API_LIMIT_402" in error_str or "API_LIMIT_403" in error_str:

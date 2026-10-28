@@ -62,8 +62,8 @@ class FinancialsTests(unittest.TestCase):
 
             def json(self):
                 return {"status": 200, "data": [
-                    {"date": "2026-06-30", "type": "Revenue", "value": 100},
-                    {"date": "2026-06-30", "type": "GrossProfit", "value": 40},
+                    {"date": "2026-06-30", "type": "Revenue", "value": 100000},
+                    {"date": "2026-06-30", "type": "GrossProfit", "value": 40000},
                     {"date": "2026-06-30", "type": "EPS", "value": -1.5},
                 ]}
 
@@ -72,6 +72,8 @@ class FinancialsTests(unittest.TestCase):
                 return Response()
 
         rows = financials_only.fetch_reports("2330", session=Session())
+        self.assertEqual(rows[(2026, 2)]["revenue"], 100.0)
+        self.assertEqual(rows[(2026, 2)]["gross_profit"], 40.0)
         self.assertEqual(rows[(2026, 2)]["gross_margin"], 40.0)
         self.assertEqual(rows[(2026, 2)]["eps"], -1.5)
         with self.assertRaises(ValueError):
@@ -107,17 +109,19 @@ class FinancialsTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT revenue_growth FROM stocks").fetchone()[0], 12)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM financial_reports").fetchone()[0], 1)
 
-    def test_quarterly_ttm_summary_preserves_monthly_growth(self):
+    def test_quarterly_summary_preserves_monthly_growth_and_existing_eps_pe(self):
         with sqlite3.connect(self.db) as connection:
+            connection.execute("UPDATE stocks SET eps=8,pe_ratio=12.5,eps_growth=7 WHERE stock_id='2330'")
             for quarter in range(1, 5):
                 financials_only.store_reports(connection, "2330", {
                     (2026, quarter): {"eps": float(quarter), "gross_margin": 40.0}
                 })
             financials_only.sync_quarterly_summary(connection, "2330")
-            eps, pe, growth, margin = connection.execute(
-                "SELECT eps,pe_ratio,revenue_growth,gross_margin FROM stocks WHERE stock_id='2330'"
+            eps, pe, eps_growth, growth, margin = connection.execute(
+                "SELECT eps,pe_ratio,eps_growth,revenue_growth,gross_margin FROM stocks WHERE stock_id='2330'"
             ).fetchone()
-            self.assertEqual((eps, pe, growth, margin), (10.0, 10.0, 12.0, 40.0))
+            self.assertEqual((eps, pe, eps_growth, growth, margin),
+                             (8.0, 12.5, 7.0, 12.0, 40.0))
 
     def test_batch_limit(self):
         with self.assertRaises(ValueError):

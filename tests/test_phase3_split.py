@@ -29,6 +29,38 @@ class EarlyDailyGateTests(unittest.TestCase):
 
 
 class RevenueOnlyTests(unittest.TestCase):
+    def test_strict_source_rejects_limit_and_http_failure(self):
+        class Response:
+            def __init__(self, status):
+                self.status_code = status
+
+        for status in (402, 403, 500):
+            with self.subTest(status=status), \
+                 patch.object(fetch_revenue.requests, "get", return_value=Response(status)):
+                with self.assertRaises(fetch_revenue.RevenueSourceError):
+                    fetch_revenue.fetch_stock_revenue("2330", strict_source=True)
+        with patch.object(fetch_revenue.requests, "get",
+                          side_effect=ConnectionError("sensitive request URL")):
+            with self.assertRaises(fetch_revenue.RevenueSourceError) as caught:
+                fetch_revenue.fetch_stock_revenue("2330", strict_source=True)
+            self.assertNotIn("sensitive request URL", str(caught.exception))
+
+    def test_strict_monthly_batch_does_not_accept_partial_source_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "revenue.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE stocks(stock_id TEXT PRIMARY KEY)")
+                conn.execute("CREATE TABLE monthly_revenue(stock_id TEXT,year INTEGER,month INTEGER)")
+                conn.executemany("INSERT INTO stocks VALUES (?)", [("2330",), ("2331",)])
+            with patch.object(fetch_revenue, "get_connection",
+                              side_effect=lambda: sqlite3.connect(db_path)), \
+                 patch.object(fetch_revenue, "get_expected_latest_month", return_value=(2026, 9)), \
+                 patch.object(fetch_revenue, "update_monthly_revenue_for_stock",
+                              side_effect=[1, fetch_revenue.RevenueSourceError("limit")]), \
+                 patch.object(fetch_revenue.time, "sleep"):
+                with self.assertRaises(fetch_revenue.RevenueSourceError):
+                    fetch_revenue.update_all_stocks(strict_source=True)
+
     def test_historical_finmind_replay_is_not_counted_as_new(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / 'revenue.db'
