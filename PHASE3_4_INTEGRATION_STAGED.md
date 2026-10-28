@@ -79,6 +79,12 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   identical before and after this rehearsal. This tests the local App data
   path, **not** Streamlit Cloud deployment, release provenance, live user
   sessions, or a normal-day cron run.
+- A 2026-10-28 source snapshot was also packaged and installed through the
+  actual opt-in `database.ensure_database` path into a disposable App DB.
+  The resulting 2,607,124 daily-price rows and 2,359 snapshots matched the
+  live DB across all nine allowed tables; SQLite integrity was `ok`, and
+  the embedded bundle ID matched the pinned manifest. Live DB/xz hashes were
+  unchanged. The 804 MB test directory was moved to local trash, not published.
 - Phase 2's normal-trading-day automatic quote→validation→push path succeeded
   on 2026-10-27 and 2026-10-28; 2026-10-27 reports also succeeded. The
   protected Streamlit Cloud app was not independently verified.
