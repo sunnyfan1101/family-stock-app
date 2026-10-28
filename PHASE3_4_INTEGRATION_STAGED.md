@@ -51,6 +51,15 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   The existing ten monthly-window cron entries have **not** been redirected.
   Before enabling this mode, inspect their schedule against the actual account
   limit and other FinMind users; 40 per run is not a global quota guarantee.
+- `monthly_cutover_guard.py` is called before `--revenue-only` copies the live
+  DB. It refuses to run while active legacy `--force-financials` cron entries
+  exist, and also refuses when cron cannot be inspected. On 2026-10-28 it
+  correctly rejected all 10 existing legacy entries. This is intentional:
+  simply adding the new monthly cron while keeping the old forced jobs would
+  duplicate API work. Replacing those jobs must also preserve quarterly
+  coverage; the current candidate has **not** yet made that production
+  scheduling decision or changed cron. The daily quote runner must deploy
+  the pending-publication reconcile path at the same time as monthly batches.
 
 ## Opt-in public-shard App path
 
@@ -106,7 +115,15 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   on 2026-10-27 and 2026-10-28; 2026-10-27 reports also succeeded. The
   protected Streamlit Cloud app was not independently verified.
 - Phase 3 still needs a staged cron canary, account-wide source quota review,
-  and operator-verified official closure list.
+  and operator-verified official closure list. The old 10 forced-financial
+  jobs and the new monthly batch cannot be left active together. A cutover
+  must back up current cron and batch state, remove/replace the old jobs,
+  verify both monthly and quarterly coverage, keep the common update lock,
+  and prove a failed push is reconciled before the next daily quote run.
   Phase 4 needs trusted artifact distribution, full App/Cloud deployment and
   rollback validation, disk/backup retention, and a capacity plan for the
-  growing price archive. Do not merge/enable all phases in one cutover.
+  growing price archive. A complete Cloud canary must pin a bundle ID from
+  the release channel rather than the bundle manifest, check both public
+  shard hashes and private-table preservation, verify concurrent sessions
+  and disk headroom, then exercise rollback to the prior single-DB release.
+  Do not merge/enable all phases in one cutover.

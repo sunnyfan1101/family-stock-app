@@ -37,6 +37,9 @@ if [ "$REVENUE_ONLY" -eq 1 ] && [ "$FINANCIALS_ONLY" -eq 1 ]; then
     echo "Choose one staged update mode" >&2
     exit 2
 fi
+if [ "$REVENUE_ONLY" -eq 1 ]; then
+    "$PYTHON_BIN" monthly_cutover_guard.py
+fi
 FINANCIAL_STATE="$PROJECT_DIR/.financial-batch-state.json"
 REVENUE_STATE="$PROJECT_DIR/.revenue-batch-state.json"
 # Every mode must settle prior monthly/quarterly promotions before changing live DB.
