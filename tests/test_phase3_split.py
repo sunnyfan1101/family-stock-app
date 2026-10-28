@@ -31,8 +31,12 @@ class EarlyDailyGateTests(unittest.TestCase):
 class RevenueOnlyTests(unittest.TestCase):
     def test_strict_source_rejects_limit_and_http_failure(self):
         class Response:
-            def __init__(self, status):
+            def __init__(self, status, body=None):
                 self.status_code = status
+                self.body = body
+
+            def json(self):
+                return self.body
 
         for status in (402, 403, 500):
             with self.subTest(status=status), \
@@ -44,6 +48,12 @@ class RevenueOnlyTests(unittest.TestCase):
             with self.assertRaises(fetch_revenue.RevenueSourceError) as caught:
                 fetch_revenue.fetch_stock_revenue("2330", strict_source=True)
             self.assertNotIn("sensitive request URL", str(caught.exception))
+        for body in ({"status": 402, "data": []},
+                     {"status": 200, "data": "not-a-list"}):
+            with self.subTest(body=body), \
+                 patch.object(fetch_revenue.requests, "get", return_value=Response(200, body)):
+                with self.assertRaises(fetch_revenue.RevenueSourceError):
+                    fetch_revenue.fetch_stock_revenue("2330", strict_source=True)
 
     def test_strict_monthly_batch_does_not_accept_partial_source_failure(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -59,6 +59,10 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01", strict_source=False):
         response = requests.get(FINMIND_API_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         if response.status_code == 200:
             data = response.json()
+            if strict_source and (not isinstance(data, dict) or
+                                  data.get("status") not in (None, 200) or
+                                  not isinstance(data.get("data"), list)):
+                raise RevenueSourceError("FinMind monthly API returned an invalid response")
             if data.get("data"):
                 df = pd.DataFrame(data["data"])
                 # FinMind 的 revenue 單位是「千元」，但數值已經 *1000
