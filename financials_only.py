@@ -14,7 +14,9 @@ import requests
 
 import database
 from financial_cursor import reserve_requests, save as write_progress
-from fetch_fundamentals_finmind import FINMIND_API_URL, FINMIND_TOKEN
+FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
+# This staged cron path must not read the legacy plaintext token file.
+FINMIND_TOKEN = ""
 from fetch_precompute import refresh_latest_stock_snapshot
 
 

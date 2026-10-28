@@ -1,7 +1,11 @@
-# Phase 3/4 staged integration (not deployed)
+# Phase 3/4 staged integration and 2026-10-28 cutover note
 
-This branch is **not** a cron cutover, a new GitHub `main` release, or a
-Streamlit deployment. The default App path remains the single `stock_data.db.xz`.
+The Phase 3 local cron cutover occurred on 2026-10-28: the ten legacy forced
+jobs were replaced by monthly 40-request batches and quarterly 150/day
+batches. A monthly 2-request canary made no data change; a quarterly
+1-request canary published 10 reports in remote DB commit `3496db9`.
+The first unattended scheduled runs still need observation. Phase 4 is not
+deployed; the default App path remains the single `stock_data.db.xz`.
 
 ## Quarterly batches and dry-run schedule
 
@@ -34,11 +38,12 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
 - FinMind's current published Free limits are 300 requests/hour without a
   token and 600 requests/hour with a registered token. The legacy monthly
   fetcher omitted the token even when a local token file was present. The
-  staged monthly and quarterly source calls now use an Authorization header
-  when available, never a query-string token. Fake-header tests pass; the
-  account's actual current `user_count`/`api_request_limit` from the official
-  `user_info` endpoint still needs a protected credential and has not been
-  measured. One anonymous monthly-data call returned HTTP/API 200 on
+  staged monthly and quarterly production runners currently use the anonymous
+  path and deliberately do not read the legacy plaintext token file. A future
+  authenticated path needs host-owned protected credential injection; synthetic
+  header tests alone do not prove that path. The account's actual current
+  `user_count`/`api_request_limit` from the official `user_info` endpoint still
+  needs a protected credential and has not been measured. One anonymous monthly-data call returned HTTP/API 200 on
   2026-10-28; that proves only that the anonymous path was not blocked then.
 - The independent monthly revenue mode fails the candidate on HTTP 402/403,
   other source/network failures and per-stock timeouts. A valid empty source
@@ -48,7 +53,7 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   stocks are skipped; a valid empty response still consumes one request.
   The cursor advances only after no-change or confirmed publication, and all
   updater modes reconcile a pending monthly archive before further work.
-  The existing ten monthly-window cron entries have **not** been redirected.
+  The ten monthly-window cron entries were replaced on 2026-10-28.
   Before enabling this mode, inspect their schedule against the actual account
   limit and other FinMind users; 40 per run is not a global quota guarantee.
 - `monthly_cutover_guard.py` is called before `--revenue-only` copies the live
@@ -114,7 +119,7 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
 - Phase 2's normal-trading-day automatic quote→validation→push path succeeded
   on 2026-10-27 and 2026-10-28; 2026-10-27 reports also succeeded. The
   protected Streamlit Cloud app was not independently verified.
-- Phase 3 still needs a staged cron canary, account-wide source quota review,
+- Phase 3 still needs unattended cron observation, account-wide source quota review,
   and operator-verified official closure list. The old 10 forced-financial
   jobs and the new monthly batch cannot be left active together. A cutover
   must back up current cron and batch state, remove/replace the old jobs,

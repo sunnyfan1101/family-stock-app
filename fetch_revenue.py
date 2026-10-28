@@ -10,7 +10,10 @@ import signal
 from contextlib import contextmanager
 from datetime import datetime
 import database
-from fetch_fundamentals_finmind import FINMIND_TOKEN
+# Standalone cron uses the anonymous, bounded allowance. Do not read the
+# legacy plaintext token file. Protected credential wiring is a separate
+# release step; this value may only be supplied through that path.
+FINMIND_TOKEN = ""
 
 FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
 DATASET = "TaiwanStockMonthRevenue"
