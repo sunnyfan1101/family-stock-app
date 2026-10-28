@@ -71,7 +71,16 @@ class FinancialsTests(unittest.TestCase):
             def get(self, *args, **kwargs):
                 return Response()
 
-        rows = financials_only.fetch_reports("2330", session=Session())
+        with patch.object(financials_only, "FINMIND_TOKEN", "synthetic-test-value"):
+            class HeaderSession(Session):
+                def get(self, *args, **kwargs):
+                    self.assertion_kwargs = kwargs
+                    return super().get(*args, **kwargs)
+
+            client = HeaderSession()
+            rows = financials_only.fetch_reports("2330", session=client)
+            self.assertNotIn("token", client.assertion_kwargs["params"])
+            self.assertIn("Authorization", client.assertion_kwargs["headers"])
         self.assertEqual(rows[(2026, 2)]["revenue"], 100.0)
         self.assertEqual(rows[(2026, 2)]["gross_profit"], 40.0)
         self.assertEqual(rows[(2026, 2)]["gross_margin"], 40.0)

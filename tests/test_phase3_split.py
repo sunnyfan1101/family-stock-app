@@ -29,6 +29,19 @@ class EarlyDailyGateTests(unittest.TestCase):
 
 
 class RevenueOnlyTests(unittest.TestCase):
+    def test_registered_monthly_request_uses_header_not_query(self):
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"status": 200, "data": []}
+
+        with patch.object(fetch_revenue, "FINMIND_TOKEN", "synthetic-test-value"), \
+             patch.object(fetch_revenue.requests, "get", return_value=Response()) as request:
+            self.assertTrue(fetch_revenue.fetch_stock_revenue("2330", strict_source=True).empty)
+        self.assertNotIn("token", request.call_args.kwargs["params"])
+        self.assertIn("Authorization", request.call_args.kwargs["headers"])
+
     def test_strict_source_rejects_limit_and_http_failure(self):
         class Response:
             def __init__(self, status, body=None):

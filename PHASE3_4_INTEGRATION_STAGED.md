@@ -31,6 +31,15 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
   them to the DB's TWD-thousands columns and leaves EPS per-share unchanged.
   Raw quarterly EPS does not overwrite existing stock-level EPS/PE because
   historical per-share comparability across splits is not yet established.
+- FinMind's current published Free limits are 300 requests/hour without a
+  token and 600 requests/hour with a registered token. The legacy monthly
+  fetcher omitted the token even when a local token file was present. The
+  staged monthly and quarterly source calls now use an Authorization header
+  when available, never a query-string token. Fake-header tests pass; the
+  account's actual current `user_count`/`api_request_limit` from the official
+  `user_info` endpoint still needs a protected credential and has not been
+  measured. One anonymous monthly-data call returned HTTP/API 200 on
+  2026-10-28; that proves only that the anonymous path was not blocked then.
 - The independent monthly revenue mode fails the candidate on HTTP 402/403,
   other source/network failures and per-stock timeouts. A valid empty source
   response remains no-change. The active daily quote mode is unchanged.

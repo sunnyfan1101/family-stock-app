@@ -42,10 +42,9 @@ def report_period(raw_date):
 def fetch_reports(stock_id, start_date="2024-01-01", session=requests):
     params = {"dataset": "TaiwanStockFinancialStatements", "data_id": stock_id,
               "start_date": start_date}
-    if FINMIND_TOKEN:
-        params["token"] = FINMIND_TOKEN
+    headers = {"Authorization": "Bearer " + FINMIND_TOKEN} if FINMIND_TOKEN else None
     try:
-        response = session.get(FINMIND_API_URL, params=params, timeout=20)
+        response = session.get(FINMIND_API_URL, params=params, headers=headers, timeout=20)
         response.raise_for_status()
     except requests.RequestException:
         # HTTP exceptions may contain the request URL and its token query

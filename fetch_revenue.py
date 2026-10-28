@@ -10,6 +10,7 @@ import signal
 from contextlib import contextmanager
 from datetime import datetime
 import database
+from fetch_fundamentals_finmind import FINMIND_TOKEN
 
 FINMIND_API_URL = "https://api.finmindtrade.com/api/v4/data"
 DATASET = "TaiwanStockMonthRevenue"
@@ -56,7 +57,9 @@ def fetch_stock_revenue(stock_id, start_date="2024-01-01", strict_source=False):
     }
     
     try:
-        response = requests.get(FINMIND_API_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+        headers = {"Authorization": "Bearer " + FINMIND_TOKEN} if FINMIND_TOKEN else None
+        response = requests.get(FINMIND_API_URL, params=params, headers=headers,
+                                timeout=REQUEST_TIMEOUT_SECONDS)
         if response.status_code == 200:
             data = response.json()
             if strict_source and (not isinstance(data, dict) or
