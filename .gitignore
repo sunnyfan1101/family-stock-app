@@ -10,6 +10,7 @@ stock_data.db.bundle.lock
 *_token.txt
 finmind_done.txt
 .financial-batch-state.json
+.revenue-batch-state.json
 .financial-daily-budget.json
 news_cache.txt
 EOF

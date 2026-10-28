@@ -294,11 +294,16 @@ def get_expected_latest_month():
 
 
 def update_all_stocks(start_date="2024-01-01", batch_size=50,
-                      per_stock_timeout=STOCK_TIMEOUT_SECONDS, strict_source=False):
+                      per_stock_timeout=STOCK_TIMEOUT_SECONDS, strict_source=False,
+                      max_requests=None, offset=0, progress_path=None):
     """
     更新所有股票月營收
     智能過濾：排除 ETF、跳過已有資料、402/403 休眠機制
     """
+    if max_requests is not None and (not strict_source or not 1 <= max_requests <= 100):
+        raise ValueError("bounded monthly batches require strict source and 1..100 requests")
+    if offset < 0:
+        raise ValueError("monthly batch offset must be nonnegative")
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -312,10 +317,10 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50,
     all_stocks = [row[0] for row in cursor.fetchall()]
     
     # 🧹 嚴格過濾無效標的：只保留代號長度=4且不是00開頭
-    stocks = [
+    stocks = sorted(
         s for s in all_stocks 
         if len(s) == 4 and not s.startswith('00')
-    ]
+    )
     
     filtered_count = len(all_stocks) - len(stocks)
     print(f"🚀 開始更新月營收...")
@@ -325,8 +330,13 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50,
     total = len(stocks)
     total_inserted = 0
     skipped_count = 0
+    requested = 0
+    scanned = 0
+    start = offset if offset < total else 0
     
-    for i, stock_id in enumerate(stocks):
+    for i in range(total):
+        stock_id = stocks[(start + i) % total]
+        scanned += 1
         print(f"\n[{i+1}/{total}] {stock_id} ", end="")
         
         # 🧠 基準月比對法：查詢該股票資料庫最新月份
@@ -349,6 +359,10 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50,
         except Exception as e:
             print(f"(跳過檢查失敗: {e}) ", end="")
         
+        if max_requests is not None and requested >= max_requests:
+            scanned -= 1
+            break
+        requested += 1
         try:
             with revenue_timeout(per_stock_timeout, stock_id):
                 count = update_monthly_revenue_for_stock(
@@ -379,13 +393,18 @@ def update_all_stocks(start_date="2024-01-01", batch_size=50,
                 print(f"❌ {stock_id} 處理失敗: {e}")
         
         # 避免請求過快
-        if (i + 1) % batch_size == 0:
-            print(f"\n⏸️ 已處理 {i+1} 檔，暫停 5 秒...")
+        if requested % batch_size == 0:
+            print(f"\n⏸️ 已請求 {requested} 檔，暫停 5 秒...")
             time.sleep(5)
         else:
             time.sleep(0.5)
     
     conn.close()
+    if progress_path is not None:
+        from financial_cursor import save as save_progress
+        save_progress(progress_path, {"offset": offset,
+                                      "next_offset": (start + scanned) % total if total else 0,
+                                      "checked": requested, "total": total})
     
     print(f"\n🎉 月營收更新完成！")
     print(f"   總股票數: {total}")

@@ -1,4 +1,5 @@
 import unittest
+import json
 import lzma
 import sqlite3
 import tempfile
@@ -29,6 +30,56 @@ class EarlyDailyGateTests(unittest.TestCase):
 
 
 class RevenueOnlyTests(unittest.TestCase):
+    def test_bounded_monthly_cursor_skips_current_and_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "revenue.db"
+            progress = Path(directory) / "progress.json"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE stocks(stock_id TEXT PRIMARY KEY)")
+                conn.execute("CREATE TABLE monthly_revenue(stock_id TEXT,year INTEGER,month INTEGER)")
+                conn.executemany("INSERT INTO stocks VALUES (?)",
+                                 [("1001",), ("1002",), ("1003",), ("1004",)])
+                conn.executemany("INSERT INTO monthly_revenue VALUES (?,2026,9)",
+                                 [("1001",), ("1004",)])
+            visited = []
+            def visit(stock_id, *_args, **_kwargs):
+                visited.append(stock_id)
+                return 0
+            with patch.object(fetch_revenue, "get_connection",
+                              side_effect=lambda: sqlite3.connect(db_path)), \
+                 patch.object(fetch_revenue, "get_expected_latest_month", return_value=(2026, 9)), \
+                 patch.object(fetch_revenue, "update_monthly_revenue_for_stock", side_effect=visit), \
+                 patch.object(fetch_revenue.time, "sleep"):
+                self.assertEqual(fetch_revenue.update_all_stocks(
+                    strict_source=True, max_requests=1, progress_path=progress), 0)
+                first = json.loads(progress.read_text())
+                self.assertEqual(first, {"offset": 0, "next_offset": 2,
+                                         "checked": 1, "total": 4})
+                self.assertEqual(fetch_revenue.update_all_stocks(
+                    strict_source=True, max_requests=1, offset=first["next_offset"],
+                    progress_path=progress), 0)
+                self.assertEqual(json.loads(progress.read_text()),
+                                 {"offset": 2, "next_offset": 1, "checked": 1, "total": 4})
+            self.assertEqual(visited, ["1002", "1003"])
+
+    def test_bounded_monthly_failure_does_not_advance_cursor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "revenue.db"
+            progress = Path(directory) / "progress.json"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE stocks(stock_id TEXT PRIMARY KEY)")
+                conn.execute("CREATE TABLE monthly_revenue(stock_id TEXT,year INTEGER,month INTEGER)")
+                conn.execute("INSERT INTO stocks VALUES ('2330')")
+            with patch.object(fetch_revenue, "get_connection",
+                              side_effect=lambda: sqlite3.connect(db_path)), \
+                 patch.object(fetch_revenue, "get_expected_latest_month", return_value=(2026, 9)), \
+                 patch.object(fetch_revenue, "update_monthly_revenue_for_stock",
+                              side_effect=fetch_revenue.RevenueSourceError("source unavailable")):
+                with self.assertRaises(fetch_revenue.RevenueSourceError):
+                    fetch_revenue.update_all_stocks(strict_source=True,
+                                                   max_requests=1, progress_path=progress)
+            self.assertFalse(progress.exists())
+
     def test_registered_monthly_request_uses_header_not_query(self):
         class Response:
             status_code = 200

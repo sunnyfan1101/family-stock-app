@@ -43,6 +43,14 @@ Streamlit deployment. The default App path remains the single `stock_data.db.xz`
 - The independent monthly revenue mode fails the candidate on HTTP 402/403,
   other source/network failures and per-stock timeouts. A valid empty source
   response remains no-change. The active daily quote mode is unchanged.
+- Monthly revenue now uses a separate ignored `.revenue-batch-state.json`
+  cursor and a default maximum of 40 source requests per run. Current-month
+  stocks are skipped; a valid empty response still consumes one request.
+  The cursor advances only after no-change or confirmed publication, and all
+  updater modes reconcile a pending monthly archive before further work.
+  The existing ten monthly-window cron entries have **not** been redirected.
+  Before enabling this mode, inspect their schedule against the actual account
+  limit and other FinMind users; 40 per run is not a global quota guarantee.
 
 ## Opt-in public-shard App path
 
