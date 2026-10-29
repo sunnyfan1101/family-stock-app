@@ -4,6 +4,7 @@ __pycache__/
 stock_data.db
 stock_data.db.previous*
 stock_data.db.bundle.lock
+.stock-bundles/
 .stock-staging/
 .env
 *.log

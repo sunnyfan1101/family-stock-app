@@ -1,6 +1,7 @@
 """Only disposable SQLite files; no production database or network access."""
 
 import json
+import io
 import sqlite3
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from phase4_offline import SHARDS, assemble, refresh_weekly_changed, split, veri
 from phase4_bundle import (build_public_bundle, build_compressed_public_bundle,
                            install_public_bundle, prepare_public_bundle,
                            validate_public_bundle)
+from phase4_delivery import fetch_release_bundle, require_install_headroom
 import database
 
 
@@ -240,6 +242,83 @@ class OfflinePartitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "output must not exist"):
             prepare_public_bundle(self.source, public,
                                   {"prices": 0, "market": 0})
+
+    def test_trusted_release_download_and_app_install(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        release = self.root / "release"
+        manifest = build_compressed_public_bundle(parts, release, {"prices": 0, "market": 0})
+        urls = []
+
+        def opener(url, timeout):
+            urls.append(url)
+            return io.BytesIO((release / url.rsplit("/", 1)[-1]).read_bytes())
+
+        cache = self.root / "cache"
+        downloaded = fetch_release_bundle("phase4-canary", manifest["bundle_id"], cache, opener)
+        self.assertEqual(validate_public_bundle(downloaded)["bundle_id"], manifest["bundle_id"])
+        self.assertEqual(len(urls), 3)
+        self.assertTrue(all("/releases/download/phase4-canary/" in url for url in urls))
+        self.assertEqual(fetch_release_bundle("phase4-canary", manifest["bundle_id"], cache, opener), downloaded)
+        self.assertEqual(len(urls), 3)  # Verified cache needs no network.
+
+        target = self.root / "app.db"
+        with sqlite3.connect(target) as db:
+            make_schema(db)
+            db.execute("INSERT INTO watchlist VALUES ('A','private-note')")
+        with patch.object(database, "DB_PATH", target), \
+             patch("phase4_delivery.urlopen", opener), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": "", "STOCK_BUNDLE_RELEASE_TAG": "phase4-canary",
+                                    "STOCK_BUNDLE_ID": manifest["bundle_id"]}):
+            database.ensure_database()
+        with sqlite3.connect(target) as db:
+            self.assertEqual(db.execute("SELECT note FROM watchlist").fetchone()[0], "private-note")
+            self.assertEqual(db.execute("SELECT bundle_id FROM _bundle_release").fetchone()[0], manifest["bundle_id"])
+
+    def test_trusted_release_rejects_wrong_pin_corruption_and_low_disk(self):
+        parts = self.root / "parts"
+        split(self.source, parts)
+        release = self.root / "release"
+        manifest = build_compressed_public_bundle(parts, release, {"prices": 0, "market": 0})
+        cache = self.root / "cache"
+
+        def opener(url, timeout):
+            return io.BytesIO((release / url.rsplit("/", 1)[-1]).read_bytes())
+
+        with self.assertRaisesRegex(ValueError, "trusted ID"):
+            fetch_release_bundle("phase4-canary", "0" * 64, cache, opener)
+        self.assertFalse((cache / ("0" * 64)).exists())
+        self.assertFalse(list(cache.glob("bundle-download-*")))
+        with self.assertRaisesRegex(ValueError, "invalid release tag"):
+            fetch_release_bundle("../bad", manifest["bundle_id"], cache, opener)
+
+        def corrupt(url, timeout):
+            data = (release / url.rsplit("/", 1)[-1]).read_bytes()
+            if url.endswith("prices.db.xz"):
+                data += b"broken"
+            return io.BytesIO(data)
+
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            fetch_release_bundle("phase4-canary", manifest["bundle_id"], cache, corrupt)
+        self.assertFalse((cache / manifest["bundle_id"]).exists())
+        self.assertFalse(list(cache.glob("bundle-download-*")))
+        def interrupted(url, timeout):
+            if url.endswith("prices.db.xz"):
+                raise OSError("injected network failure")
+            return opener(url, timeout)
+        with self.assertRaisesRegex(OSError, "injected network failure"):
+            fetch_release_bundle("phase4-canary", manifest["bundle_id"], cache, interrupted)
+        self.assertFalse(list(cache.glob("bundle-download-*")))
+        with patch("phase4_delivery.shutil.disk_usage") as disk:
+            disk.return_value.free = 0
+            with self.assertRaisesRegex(OSError, "insufficient disk"):
+                require_install_headroom(release, self.root / "app.db")
+        with patch.object(database, "DB_PATH", self.root / "app.db"), \
+             patch.dict("os.environ", {"STOCK_BUNDLE_DIR": str(release),
+                                    "STOCK_BUNDLE_RELEASE_TAG": "phase4-canary",
+                                    "STOCK_BUNDLE_ID": manifest["bundle_id"]}):
+            with self.assertRaisesRegex(ValueError, "exactly one bundle source"):
+                database.ensure_database()
 
 
 class IncrementalWeeklyTests(unittest.TestCase):
